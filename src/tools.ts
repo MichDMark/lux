@@ -21,8 +21,6 @@ const PathArgumentsSchema = z.strictObject({
   path: z.string().min(1).max(200),
 });
 
-type PathArguments = z.infer<typeof PathArgumentsSchema>;
-
 function isPathInside(parentPath: string, childPath: string): boolean {
   const relativePath = relative(parentPath, childPath);
 
@@ -68,7 +66,9 @@ async function resolveSandboxPath(
       throw error;
     }
 
-    throw new Error(`No se pudo localizar la ruta: ${errorMessage(error)}`);
+    throw new Error(`No se pudo localizar la ruta: ${errorMessage(error)}`, {
+      cause: error,
+    });
   }
 }
 

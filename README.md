@@ -49,6 +49,9 @@ pnpm exec tsx src/cli.ts \
 
 ```bash
 pnpm check                 # Comprueba TypeScript sin generar archivos.
+pnpm lint                  # Aplica reglas de calidad a código y pruebas.
+pnpm test                  # Ejecuta las pruebas automatizadas.
+pnpm test:watch            # Ejecuta pruebas al guardar cambios.
 pnpm models                # Lista modelos disponibles en Ollama.
 pnpm agent -- --help       # Muestra las opciones del CLI.
 ```

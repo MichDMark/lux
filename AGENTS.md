@@ -596,6 +596,8 @@ Ejecutar como mínimo:
 
 ```bash
 pnpm check
+pnpm lint
+pnpm test
 ```
 
 Después hacer una prueba real con Ollama si el cambio afecta:

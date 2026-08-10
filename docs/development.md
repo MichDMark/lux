@@ -10,8 +10,10 @@ Cada cambio debe enseñar una idea concreta y conservar el proyecto pequeño, po
 2. Inspecciona el comportamiento actual antes de cambiarlo.
 3. Implementa el cambio mínimo solicitado.
 4. Actualiza los documentos cuyo contrato, comportamiento o límite cambie.
-5. Ejecuta `pnpm check`.
+5. Ejecuta `pnpm check`, `pnpm lint` y `pnpm test`.
 6. Si el cambio afecta el loop, prompt, tools, configuración o cliente Ollama, realiza una prueba real con Ollama y registra el resultado.
+
+`pnpm check` valida tipos, `pnpm lint` aplica reglas estáticas y `pnpm test` ejecuta Vitest. La suite usa sandboxes temporales y no necesita que Ollama esté activo. Las pruebas con Ollama siguen siendo manuales: evalúan el comportamiento del modelo, no la estabilidad del harness.
 
 ## Casos de prueba manuales
 
