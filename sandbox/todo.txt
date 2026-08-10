@@ -1,0 +1,3 @@
+- Probar lectura de archivos
+- Agregar listado de directorios
+- Construir un agent loop

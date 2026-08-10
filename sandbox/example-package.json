@@ -1,0 +1,17 @@
+{
+  "name": "inventory-demo",
+  "private": true,
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "test": "vitest run",
+    "check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0",
+    "vitest": "^3.0.0"
+  }
+}
