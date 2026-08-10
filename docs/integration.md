@@ -9,7 +9,7 @@ LUX se distribuye hoy como código fuente y CLI educativa. No publica un paquete
 | Interfaz | Uso |
 | --- | --- |
 | `loadConfig(overrides)` | Construye `AgentConfig` desde entorno y overrides del CLI. |
-| `runAgent(request, config)` | Ejecuta el loop y devuelve la respuesta final como `Promise<string>`. |
+| `runAgent(request, config, llmClient?)` | Ejecuta el loop y devuelve la respuesta final como `Promise<string>`; acepta un cliente LLM sustituible para pruebas o integración. |
 | `OllamaClient` | Genera decisiones estructuradas y lista modelos instalados. |
 | `listTools()` / `toolRegistry` | Expone las tools registradas para el harness. |
 
@@ -24,6 +24,8 @@ const answer = await runAgent("¿Qué archivos hay disponibles?", config);
 ```
 
 Las rutas de importación deben adaptarse al modo en que el proyecto consumidor integre el código. Este ejemplo no implica que LUX sea una dependencia instalable.
+
+El tercer argumento opcional debe implementar `generate(prompt, format)`. Si se omite, LUX crea su cliente `OllamaClient` normal; un consumidor puede proporcionar una implementación compatible para pruebas sin realizar llamadas a Ollama.
 
 ## Requisitos para un consumidor
 

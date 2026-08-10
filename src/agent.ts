@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { AgentConfig } from "./config.js";
 import { OllamaClient } from "./ollama-client.js";
+import type { GenerateResult } from "./ollama-client.js";
 import { toolRegistry, listTools } from "./tools.js";
 import type { ToolDefinition } from "./tools.js";
 import { Tracer } from "./tracer.js";
@@ -25,6 +26,10 @@ type ToolObservation = {
   status: "success" | "error";
   result?: unknown;
   error?: string;
+};
+
+export type AgentLlmClient = {
+  generate(prompt: string, format: unknown): Promise<GenerateResult>;
 };
 
 function getErrorMessage(error: unknown): string {
@@ -123,9 +128,9 @@ function createPrompt(
 export async function runAgent(
   request: string,
   config: AgentConfig,
+  llmClient: AgentLlmClient = new OllamaClient(config),
 ): Promise<string> {
   const tracer = new Tracer(config.verbose);
-  const ollama = new OllamaClient(config);
   const tools = listTools();
   const observations: ToolObservation[] = [];
 
@@ -143,7 +148,7 @@ export async function runAgent(
         : "final_answer está deshabilitado; solo se permiten tools.",
     );
 
-    const generation = await ollama.generate(
+    const generation = await llmClient.generate(
       createPrompt(request, observations, tools, finalAnswerAllowed),
       createDecisionJsonSchema(tools, finalAnswerAllowed),
     );
