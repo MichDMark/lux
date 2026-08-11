@@ -7,7 +7,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "agent": "tsx src/cli.ts",
+    "lux": "tsx src/cli.ts",
     "models": "tsx src/cli.ts --list-models",
     "check": "tsc --noEmit",
     "lint": "eslint src tests",

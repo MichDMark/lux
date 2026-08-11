@@ -4,3 +4,4 @@ Este archivo contiene notas generales sobre los experimentos con modelos locales
 
 Autor: Mich DM
 Pelicula Favorita: Iron Man 1
+La funcion de este proyecto es analisis de texto
