@@ -16,7 +16,7 @@ function createConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
     ollamaBaseUrl: "http://localhost:11434",
     numCtx: 1024,
     keepAlive: "0s",
-    maxSteps: 3,
+    maxSteps: 5,
     maxFileBytes: 12_000,
     maxDirectoryEntries: 100,
     sandboxDirectory,
@@ -25,13 +25,59 @@ function createConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
   };
 }
 
-function createSequencedClient(responses: string[]): {
+function createSequencedClient(
+  responses: string[],
+  requirementDescriptions = ["Completar la solicitud."],
+): {
   client: AgentLlmClient;
   prompts: string[];
   formats: unknown[];
 } {
   const prompts: string[] = [];
   const formats: unknown[] = [];
+  const plannedResponses = [
+    JSON.stringify({
+      type: "task_requirements",
+      requirements: requirementDescriptions.map((description) => ({ description })),
+    }),
+    ...responses.map((response) => {
+      try {
+        const decision: unknown = JSON.parse(response);
+
+        if (typeof decision !== "object" || decision === null || !("type" in decision)) {
+          return response;
+        }
+
+        if (decision.type === "tool_call") {
+          return JSON.stringify({
+            ...decision,
+            resolved_requirements:
+              "resolved_requirements" in decision
+                ? decision.resolved_requirements
+                : [],
+          });
+        }
+
+        if (decision.type === "final_answer") {
+          const evidence = "evidence" in decision ? decision.evidence : undefined;
+
+          return JSON.stringify({
+            ...decision,
+            resolved_requirements:
+              "resolved_requirements" in decision
+                ? decision.resolved_requirements
+                : Array.isArray(evidence)
+                  ? [{ id: "req-1", evidence }]
+                  : [],
+          });
+        }
+      } catch {
+        return response;
+      }
+
+      return response;
+    }),
+  ];
   let index = 0;
 
   return {
@@ -39,7 +85,7 @@ function createSequencedClient(responses: string[]): {
       async generate(prompt, format) {
         prompts.push(prompt);
         formats.push(format);
-        const response = responses[index];
+        const response = plannedResponses[index];
         index++;
 
         if (response === undefined) {
@@ -70,7 +116,7 @@ describe("runAgent", () => {
     await expect(runAgent("Responde brevemente.", createConfig(), client)).rejects.toThrow(
       "El modelo no produjo JSON válido:",
     );
-    expect(prompts).toHaveLength(1);
+    expect(prompts).toHaveLength(2);
   });
 
   it("rejects a decision that does not satisfy the schema", async () => {
@@ -95,7 +141,7 @@ describe("runAgent", () => {
     await expect(runAgent("Responde brevemente.", createConfig(), client)).rejects.toThrow(
       "El modelo intentó finalizar en un estado no permitido.",
     );
-    expect(prompts).toHaveLength(1);
+    expect(prompts).toHaveLength(2);
   });
 
   it("does not offer final_answer in the schema while there is no evidence", async () => {
@@ -111,7 +157,7 @@ describe("runAgent", () => {
       "El modelo intentó finalizar en un estado no permitido.",
     );
 
-    const receivedSchema = JSON.stringify(formats[0]);
+    const receivedSchema = JSON.stringify(formats[1]);
     expect(receivedSchema).not.toContain("final_answer");
     expect(receivedSchema).toContain("read_file");
     expect(receivedSchema).toContain("list_directory");
@@ -134,8 +180,8 @@ describe("runAgent", () => {
     await expect(runAgent("Responde brevemente.", createConfig(), client)).resolves.toBe(
       "Directorio inspeccionado.",
     );
-    expect(prompts[1]).toContain("Estado de evidencia actual: DIRECTORY_EVIDENCE.");
-    const secondStepSchema = JSON.stringify(formats[1]);
+    expect(prompts[2]).toContain("Estado de evidencia actual: DIRECTORY_EVIDENCE.");
+    const secondStepSchema = JSON.stringify(formats[2]);
     expect(secondStepSchema).toContain("final_answer");
     expect(secondStepSchema).toContain("obs-1");
   });
@@ -163,9 +209,111 @@ describe("runAgent", () => {
     await expect(runAgent("Responde brevemente.", createConfig(), client)).resolves.toBe(
       "Archivo leído.",
     );
-    expect(prompts[2]).toContain("Estado de evidencia actual: FILE_EVIDENCE.");
-    expect(prompts[2]).toContain('"id": "obs-1"');
-    expect(prompts[2]).toContain('"id": "obs-2"');
+    expect(prompts[3]).toContain("Estado de evidencia actual: FILE_EVIDENCE.");
+    expect(prompts[3]).toContain('"id": "obs-1"');
+    expect(prompts[3]).toContain('"id": "obs-2"');
+  });
+
+  it("rejects a partial final answer when a requirement remains pending", async () => {
+    await writeFile(
+      join(sandboxDirectory, "example-package.json"),
+      '{"scripts":{"test":"vitest run"}}',
+    );
+    const { client } = createSequencedClient(
+      [
+        JSON.stringify({
+          type: "tool_call",
+          tool: "list_directory",
+          arguments: { path: "." },
+        }),
+        JSON.stringify({
+          type: "tool_call",
+          tool: "read_file",
+          arguments: { path: "example-package.json" },
+        }),
+        JSON.stringify({
+          type: "final_answer",
+          answer: "El proyecto usa Vitest.",
+          evidence: ["obs-2"],
+          resolved_requirements: [{ id: "req-2", evidence: ["obs-2"] }],
+        }),
+      ],
+      ["Encontrar el nombre del autor.", "Encontrar la herramienta de tests."],
+    );
+
+    await expect(
+      runAgent(
+        "dime el nombre del autor y qué herramienta usa el proyecto para ejecutar los tests",
+        createConfig(),
+        client,
+      ),
+    ).rejects.toThrow("No se puede finalizar: requisitos pendientes: req-1.");
+  });
+
+  it("completes a multi-requirement task only after each requirement has evidence", async () => {
+    await writeFile(
+      join(sandboxDirectory, "example-package.json"),
+      '{"scripts":{"test":"vitest run"}}',
+    );
+    await writeFile(join(sandboxDirectory, "notes.md"), "Autor: Mich DM");
+    const { client, prompts } = createSequencedClient(
+      [
+        JSON.stringify({
+          type: "tool_call",
+          tool: "list_directory",
+          arguments: { path: "." },
+        }),
+        JSON.stringify({
+          type: "tool_call",
+          tool: "read_file",
+          arguments: { path: "example-package.json" },
+        }),
+        JSON.stringify({
+          type: "tool_call",
+          tool: "read_file",
+          arguments: { path: "notes.md" },
+          resolved_requirements: [{ id: "req-2", evidence: ["obs-2"] }],
+        }),
+        JSON.stringify({
+          type: "final_answer",
+          answer: "El autor es Mich DM y los tests usan Vitest.",
+          evidence: ["obs-2", "obs-3"],
+          resolved_requirements: [{ id: "req-1", evidence: ["obs-3"] }],
+        }),
+      ],
+      ["Encontrar el nombre del autor.", "Encontrar la herramienta de tests."],
+    );
+
+    await expect(
+      runAgent(
+        "dime el nombre del autor y qué herramienta usa el proyecto para ejecutar los tests",
+        createConfig(),
+        client,
+      ),
+    ).resolves.toBe("El autor es Mich DM y los tests usan Vitest.");
+    expect(prompts[4]).toContain('"id": "req-2"');
+    expect(prompts[4]).toContain('"status": "resolved"');
+    expect(prompts[4]).toContain('"evidence": [\n      "obs-2"\n    ]');
+  });
+
+  it("rejects a requirement resolution for an unknown requirement", async () => {
+    const { client } = createSequencedClient([
+      JSON.stringify({
+        type: "tool_call",
+        tool: "list_directory",
+        arguments: { path: "." },
+      }),
+      JSON.stringify({
+        type: "final_answer",
+        answer: "Respuesta indebida.",
+        evidence: ["obs-1"],
+        resolved_requirements: [{ id: "req-99", evidence: ["obs-1"] }],
+      }),
+    ]);
+
+    await expect(runAgent("Responde brevemente.", createConfig(), client)).rejects.toThrow(
+      "El requisito req-99 no existe en la tarea actual.",
+    );
   });
 
   it("rejects a final answer that references an observation that does not exist", async () => {
@@ -241,10 +389,10 @@ describe("runAgent", () => {
       "Directorio reutilizado.",
     );
     expect(executeSpy).toHaveBeenCalledTimes(1);
-    expect(prompts[2]).toContain('"id": "obs-2"');
-    expect(prompts[2]).toContain('"status": "blocked"');
-    expect(prompts[2]).toContain('"reason": "duplicate_successful_tool_call"');
-    expect(prompts[2]).toContain('"existingObservationId": "obs-1"');
+    expect(prompts[3]).toContain('"id": "obs-2"');
+    expect(prompts[3]).toContain('"status": "blocked"');
+    expect(prompts[3]).toContain('"reason": "duplicate_successful_tool_call"');
+    expect(prompts[3]).toContain('"existingObservationId": "obs-1"');
   });
 
   it("rejects a final answer that references a blocked observation", async () => {
@@ -327,11 +475,11 @@ describe("runAgent", () => {
     ]);
 
     await expect(
-      runAgent("Responde brevemente.", createConfig({ maxSteps: 2 }), client),
-    ).rejects.toThrow("El agente alcanzó el límite de 2 pasos sin terminar.");
+      runAgent("Responde brevemente.", createConfig({ maxSteps: 3 }), client),
+    ).rejects.toThrow("El agente alcanzó el límite de 3 pasos sin terminar.");
     expect(executeSpy).toHaveBeenCalledTimes(2);
-    expect(prompts[1]).toContain('"status": "error"');
-    expect(prompts[1]).not.toContain('"status": "blocked"');
+    expect(prompts[2]).toContain('"status": "error"');
+    expect(prompts[2]).not.toContain('"status": "blocked"');
   });
 
   it("records a tool error and lets a later valid final answer finish", async () => {
@@ -356,10 +504,10 @@ describe("runAgent", () => {
     await expect(runAgent("Completa la tarea.", createConfig(), client)).resolves.toBe(
       "La ruta fue rechazada.",
     );
-    expect(prompts).toHaveLength(3);
-    expect(prompts[2]).toContain('"id": "obs-2"');
-    expect(prompts[2]).toContain('"status": "error"');
-    expect(prompts[2]).toContain("La ruta intenta salir de la carpeta sandbox.");
+    expect(prompts).toHaveLength(4);
+    expect(prompts[3]).toContain('"id": "obs-2"');
+    expect(prompts[3]).toContain('"status": "error"');
+    expect(prompts[3]).toContain("La ruta intenta salir de la carpeta sandbox.");
   });
 
   it("stops after the configured maximum number of non-terminal steps", async () => {

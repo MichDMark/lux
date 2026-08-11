@@ -422,6 +422,8 @@ Su contrato incluye las observaciones exitosas que sustentan la respuesta:
 
 El harness comprueba que cada ID exista en el loop actual y corresponda a una observación exitosa. Esta comprobación garantiza trazabilidad, no que el contenido citado demuestre semánticamente la respuesta.
 
+Antes de usar tools, el modelo declara los requisitos independientes de la solicitud mediante `task_requirements`. El harness asigna IDs `req-*`; cada requisito permanece `pending` hasta que una decisión posterior lo marque `resolved` con evidencia exitosa. `final_answer` se rechaza si queda alguno pendiente.
+
 ---
 
 ## Máquina de estados
@@ -435,6 +437,8 @@ FILE_EVIDENCE      → read_file exitoso; final_answer permitido
 ```
 
 Cada observación recibe un ID único y legible (`obs-1`, `obs-2`, …). Si coexisten observaciones de directorio y archivo, `FILE_EVIDENCE` tiene prioridad.
+
+El estado de tarea es independiente del estado de evidencia: indica qué requisitos del objetivo siguen pendientes o se resolvieron, junto con sus IDs de observación. La planificación inicial cuenta como un paso de `AGENT_MAX_STEPS`.
 
 ---
 
