@@ -77,6 +77,17 @@ describe("runAgent", () => {
     );
   });
 
+  it("rejects a final answer when file evidence is still required", async () => {
+    const { client, prompts } = createSequencedClient([
+      JSON.stringify({ type: "final_answer", answer: "Respuesta indebida." }),
+    ]);
+
+    await expect(runAgent("Revisa la configuración", createConfig(), client)).rejects.toThrow(
+      "El modelo intentó finalizar en un estado no permitido.",
+    );
+    expect(prompts).toHaveLength(1);
+  });
+
   it("records a tool error and lets a later valid final answer finish", async () => {
     const { client, prompts } = createSequencedClient([
       JSON.stringify({
