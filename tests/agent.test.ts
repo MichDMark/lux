@@ -1,10 +1,11 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runAgent } from "../src/agent.js";
 import type { AgentLlmClient } from "../src/agent.js";
 import type { AgentConfig } from "../src/config.js";
+import { toolRegistry } from "../src/tools.js";
 
 let sandboxDirectory: string;
 
@@ -58,6 +59,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await rm(sandboxDirectory, { recursive: true, force: true });
 });
 
@@ -207,6 +209,129 @@ describe("runAgent", () => {
     await expect(runAgent("Responde brevemente.", createConfig(), client)).rejects.toThrow(
       "La evidencia obs-2 no corresponde a una observación exitosa.",
     );
+  });
+
+  it("blocks a duplicate successful tool call without executing it again", async () => {
+    const listDirectory = toolRegistry.get("list_directory");
+
+    if (!listDirectory) {
+      throw new Error("list_directory no está registrada.");
+    }
+
+    const executeSpy = vi.spyOn(listDirectory, "execute");
+    const { client, prompts } = createSequencedClient([
+      JSON.stringify({
+        type: "tool_call",
+        tool: "list_directory",
+        arguments: { path: "." },
+      }),
+      JSON.stringify({
+        type: "tool_call",
+        tool: "list_directory",
+        arguments: { path: "." },
+      }),
+      JSON.stringify({
+        type: "final_answer",
+        answer: "Directorio reutilizado.",
+        evidence: ["obs-1"],
+      }),
+    ]);
+
+    await expect(runAgent("Responde brevemente.", createConfig(), client)).resolves.toBe(
+      "Directorio reutilizado.",
+    );
+    expect(executeSpy).toHaveBeenCalledTimes(1);
+    expect(prompts[2]).toContain('"id": "obs-2"');
+    expect(prompts[2]).toContain('"status": "blocked"');
+    expect(prompts[2]).toContain('"reason": "duplicate_successful_tool_call"');
+    expect(prompts[2]).toContain('"existingObservationId": "obs-1"');
+  });
+
+  it("rejects a final answer that references a blocked observation", async () => {
+    const { client } = createSequencedClient([
+      JSON.stringify({
+        type: "tool_call",
+        tool: "list_directory",
+        arguments: { path: "." },
+      }),
+      JSON.stringify({
+        type: "tool_call",
+        tool: "list_directory",
+        arguments: { path: "." },
+      }),
+      JSON.stringify({
+        type: "final_answer",
+        answer: "Respuesta indebida.",
+        evidence: ["obs-2"],
+      }),
+    ]);
+
+    await expect(runAgent("Responde brevemente.", createConfig(), client)).rejects.toThrow(
+      "La evidencia obs-2 no corresponde a una observación exitosa.",
+    );
+  });
+
+  it("allows the same tool with different arguments", async () => {
+    await writeFile(join(sandboxDirectory, "first.md"), "primero");
+    await writeFile(join(sandboxDirectory, "second.md"), "segundo");
+    const readFile = toolRegistry.get("read_file");
+
+    if (!readFile) {
+      throw new Error("read_file no está registrada.");
+    }
+
+    const executeSpy = vi.spyOn(readFile, "execute");
+    const { client } = createSequencedClient([
+      JSON.stringify({
+        type: "tool_call",
+        tool: "read_file",
+        arguments: { path: "first.md" },
+      }),
+      JSON.stringify({
+        type: "tool_call",
+        tool: "read_file",
+        arguments: { path: "second.md" },
+      }),
+      JSON.stringify({
+        type: "final_answer",
+        answer: "Dos archivos leídos.",
+        evidence: ["obs-1", "obs-2"],
+      }),
+    ]);
+
+    await expect(runAgent("Responde brevemente.", createConfig(), client)).resolves.toBe(
+      "Dos archivos leídos.",
+    );
+    expect(executeSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not block a repeated tool call after its earlier execution failed", async () => {
+    const readFile = toolRegistry.get("read_file");
+
+    if (!readFile) {
+      throw new Error("read_file no está registrada.");
+    }
+
+    const executeSpy = vi.spyOn(readFile, "execute");
+    const { client, prompts } = createSequencedClient([
+      JSON.stringify({
+        type: "tool_call",
+        tool: "read_file",
+        arguments: { path: "../outside.md" },
+      }),
+      JSON.stringify({
+        type: "tool_call",
+        tool: "read_file",
+        arguments: { path: "../outside.md" },
+      }),
+    ]);
+
+    await expect(
+      runAgent("Responde brevemente.", createConfig({ maxSteps: 2 }), client),
+    ).rejects.toThrow("El agente alcanzó el límite de 2 pasos sin terminar.");
+    expect(executeSpy).toHaveBeenCalledTimes(2);
+    expect(prompts[1]).toContain('"status": "error"');
+    expect(prompts[1]).not.toContain('"status": "blocked"');
   });
 
   it("records a tool error and lets a later valid final answer finish", async () => {

@@ -58,6 +58,22 @@ Cuando está permitido, `final_answer` debe incluir al menos un ID de evidencia:
 
 El JSON Schema solo ofrece IDs de observaciones exitosas y el harness vuelve a validar que cada referencia exista y sea exitosa. Esto ofrece trazabilidad, pero todavía no verifica que la evidencia demuestre semánticamente la respuesta.
 
+## Llamadas redundantes
+
+Antes de ejecutar una tool, el harness compara su nombre y argumentos normalizados con las observaciones exitosas del loop actual. Si ya existe una coincidencia, no vuelve a ejecutar la tool y registra una nueva observación:
+
+```json
+{
+  "id": "obs-3",
+  "tool": "read_file",
+  "status": "blocked",
+  "reason": "duplicate_successful_tool_call",
+  "existingObservationId": "obs-2"
+}
+```
+
+`blocked` no es evidencia válida y no termina el loop. Indica al modelo que puede reutilizar `obs-2`, elegir otra acción o finalizar con evidencia exitosa existente. Los errores no se consideran duplicados: una llamada que falló puede volver a intentarse.
+
 ## Estructura actual
 
 ```text

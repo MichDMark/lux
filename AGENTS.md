@@ -655,14 +655,23 @@ Cuando una tool falle:
 - no ocultar fallos;
 - no convertir automáticamente errores en `final_answer`.
 
-Más adelante estudiar prevención de:
+Cuando el modelo repita una tool con los mismos argumentos normalizados y ya exista una observación exitosa equivalente:
 
 ```text
 misma tool
 + mismos argumentos
-+ mismo error
-→ repetición inútil
++ éxito previo
+→ observación blocked
+→ reutilizar la evidencia original o elegir otra acción
 ```
+
+Las observaciones pueden tener tres estados:
+
+- `success`: la tool se ejecutó correctamente;
+- `error`: la tool se intentó ejecutar y falló;
+- `blocked`: el harness no ejecutó una llamada redundante e indica el ID exitoso reutilizable.
+
+Solo `success` es evidencia válida para `final_answer`.
 
 ---
 
