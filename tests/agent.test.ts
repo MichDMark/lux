@@ -27,14 +27,17 @@ function createConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
 function createSequencedClient(responses: string[]): {
   client: AgentLlmClient;
   prompts: string[];
+  formats: unknown[];
 } {
   const prompts: string[] = [];
+  const formats: unknown[] = [];
   let index = 0;
 
   return {
     client: {
-      async generate(prompt) {
+      async generate(prompt, format) {
         prompts.push(prompt);
+        formats.push(format);
         const response = responses[index];
         index++;
 
@@ -46,6 +49,7 @@ function createSequencedClient(responses: string[]): {
       },
     },
     prompts,
+    formats,
   };
 }
 
@@ -86,6 +90,21 @@ describe("runAgent", () => {
       "El modelo intentó finalizar en un estado no permitido.",
     );
     expect(prompts).toHaveLength(1);
+  });
+
+  it("does not offer final_answer in the schema while file evidence is required", async () => {
+    const { client, formats } = createSequencedClient([
+      JSON.stringify({ type: "final_answer", answer: "Respuesta indebida." }),
+    ]);
+
+    await expect(runAgent("Revisa la configuración", createConfig(), client)).rejects.toThrow(
+      "El modelo intentó finalizar en un estado no permitido.",
+    );
+
+    const receivedSchema = JSON.stringify(formats[0]);
+    expect(receivedSchema).not.toContain("final_answer");
+    expect(receivedSchema).toContain("read_file");
+    expect(receivedSchema).toContain("list_directory");
   });
 
   it("records a tool error and lets a later valid final answer finish", async () => {
