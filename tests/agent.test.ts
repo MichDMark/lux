@@ -58,6 +58,15 @@ afterEach(async () => {
 });
 
 describe("runAgent", () => {
+  it("rejects a response that is not syntactically valid JSON", async () => {
+    const { client, prompts } = createSequencedClient(["{respuesta rota"]);
+
+    await expect(runAgent("Responde brevemente.", createConfig(), client)).rejects.toThrow(
+      "El modelo no produjo JSON válido:",
+    );
+    expect(prompts).toHaveLength(1);
+  });
+
   it("rejects a decision that does not satisfy the schema", async () => {
     const { client } = createSequencedClient([
       JSON.stringify({ type: "tool_call", tool: 42, arguments: {} }),
