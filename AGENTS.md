@@ -410,33 +410,31 @@ Las tools producen observaciones.
 
 No agregar `final_answer` al registro de tools.
 
+Su contrato incluye las observaciones exitosas que sustentan la respuesta:
+
+```json
+{
+  "type": "final_answer",
+  "answer": "Respuesta basada en el sandbox.",
+  "evidence": ["obs-2"]
+}
+```
+
+El harness comprueba que cada ID exista en el loop actual y corresponda a una observación exitosa. Esta comprobación garantiza trazabilidad, no que el contenido citado demuestre semánticamente la respuesta.
+
 ---
 
 ## Máquina de estados
 
-La implementación actual utiliza una aproximación basada en palabras clave para decidir si una solicitud requiere evidencia de archivos.
-
-Las pruebas demostraron que esto no escala.
-
-Ejemplos que expusieron la limitación:
+El estado se deriva de las observaciones existentes; no depende de palabras clave de la solicitud ni mantiene una segunda fuente mutable de verdad.
 
 ```text
-"encuentra el nombre del autor"
-"encuentra mi película favorita"
+NO_EVIDENCE        → no hay observaciones exitosas; final_answer prohibido
+DIRECTORY_EVIDENCE → list_directory exitoso; final_answer permitido
+FILE_EVIDENCE      → read_file exitoso; final_answer permitido
 ```
 
-Gemma decidió correctamente usar tools, pero `final_answer` estaba habilitado demasiado pronto.
-
-Dirección de mejora acordada:
-
-- evitar depender de una regex de palabras clave;
-- basar las transiciones principalmente en evidencia real;
-- estado inicial sin evidencia;
-- después de listar, existe evidencia de directorio;
-- después de leer, existe evidencia de contenido;
-- habilitar finalización según el tipo de evidencia disponible.
-
-No resolver esta limitación simplemente agregando palabras a una expresión regular.
+Cada observación recibe un ID único y legible (`obs-1`, `obs-2`, …). Si coexisten observaciones de directorio y archivo, `FILE_EVIDENCE` tiene prioridad.
 
 ---
 

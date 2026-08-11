@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -81,23 +81,31 @@ describe("runAgent", () => {
     );
   });
 
-  it("rejects a final answer when file evidence is still required", async () => {
+  it("rejects a final answer when there is no evidence", async () => {
     const { client, prompts } = createSequencedClient([
-      JSON.stringify({ type: "final_answer", answer: "Respuesta indebida." }),
+      JSON.stringify({
+        type: "final_answer",
+        answer: "Respuesta indebida.",
+        evidence: ["obs-1"],
+      }),
     ]);
 
-    await expect(runAgent("Revisa la configuración", createConfig(), client)).rejects.toThrow(
+    await expect(runAgent("Responde brevemente.", createConfig(), client)).rejects.toThrow(
       "El modelo intentó finalizar en un estado no permitido.",
     );
     expect(prompts).toHaveLength(1);
   });
 
-  it("does not offer final_answer in the schema while file evidence is required", async () => {
+  it("does not offer final_answer in the schema while there is no evidence", async () => {
     const { client, formats } = createSequencedClient([
-      JSON.stringify({ type: "final_answer", answer: "Respuesta indebida." }),
+      JSON.stringify({
+        type: "final_answer",
+        answer: "Respuesta indebida.",
+        evidence: ["obs-1"],
+      }),
     ]);
 
-    await expect(runAgent("Revisa la configuración", createConfig(), client)).rejects.toThrow(
+    await expect(runAgent("Responde brevemente.", createConfig(), client)).rejects.toThrow(
       "El modelo intentó finalizar en un estado no permitido.",
     );
 
@@ -107,22 +115,126 @@ describe("runAgent", () => {
     expect(receivedSchema).toContain("list_directory");
   });
 
-  it("records a tool error and lets a later valid final answer finish", async () => {
+  it("uses DIRECTORY_EVIDENCE after listing and accepts a valid reference", async () => {
+    const { client, prompts, formats } = createSequencedClient([
+      JSON.stringify({
+        type: "tool_call",
+        tool: "list_directory",
+        arguments: { path: "." },
+      }),
+      JSON.stringify({
+        type: "final_answer",
+        answer: "Directorio inspeccionado.",
+        evidence: ["obs-1"],
+      }),
+    ]);
+
+    await expect(runAgent("Responde brevemente.", createConfig(), client)).resolves.toBe(
+      "Directorio inspeccionado.",
+    );
+    expect(prompts[1]).toContain("Estado de evidencia actual: DIRECTORY_EVIDENCE.");
+    const secondStepSchema = JSON.stringify(formats[1]);
+    expect(secondStepSchema).toContain("final_answer");
+    expect(secondStepSchema).toContain("obs-1");
+  });
+
+  it("uses FILE_EVIDENCE and assigns unique IDs to successful observations", async () => {
+    await writeFile(join(sandboxDirectory, "note.md"), "contenido");
     const { client, prompts } = createSequencedClient([
+      JSON.stringify({
+        type: "tool_call",
+        tool: "list_directory",
+        arguments: { path: "." },
+      }),
+      JSON.stringify({
+        type: "tool_call",
+        tool: "read_file",
+        arguments: { path: "note.md" },
+      }),
+      JSON.stringify({
+        type: "final_answer",
+        answer: "Archivo leído.",
+        evidence: ["obs-1", "obs-2"],
+      }),
+    ]);
+
+    await expect(runAgent("Responde brevemente.", createConfig(), client)).resolves.toBe(
+      "Archivo leído.",
+    );
+    expect(prompts[2]).toContain("Estado de evidencia actual: FILE_EVIDENCE.");
+    expect(prompts[2]).toContain('"id": "obs-1"');
+    expect(prompts[2]).toContain('"id": "obs-2"');
+  });
+
+  it("rejects a final answer that references an observation that does not exist", async () => {
+    const { client } = createSequencedClient([
+      JSON.stringify({
+        type: "tool_call",
+        tool: "list_directory",
+        arguments: { path: "." },
+      }),
+      JSON.stringify({
+        type: "final_answer",
+        answer: "Respuesta indebida.",
+        evidence: ["obs-99"],
+      }),
+    ]);
+
+    await expect(runAgent("Responde brevemente.", createConfig(), client)).rejects.toThrow(
+      "La evidencia obs-99 no existe en el agent loop actual.",
+    );
+  });
+
+  it("rejects a final answer that references a failed observation", async () => {
+    const { client } = createSequencedClient([
+      JSON.stringify({
+        type: "tool_call",
+        tool: "list_directory",
+        arguments: { path: "." },
+      }),
       JSON.stringify({
         type: "tool_call",
         tool: "read_file",
         arguments: { path: "../outside.md" },
       }),
-      JSON.stringify({ type: "final_answer", answer: "La ruta fue rechazada." }),
+      JSON.stringify({
+        type: "final_answer",
+        answer: "Respuesta indebida.",
+        evidence: ["obs-2"],
+      }),
+    ]);
+
+    await expect(runAgent("Responde brevemente.", createConfig(), client)).rejects.toThrow(
+      "La evidencia obs-2 no corresponde a una observación exitosa.",
+    );
+  });
+
+  it("records a tool error and lets a later valid final answer finish", async () => {
+    const { client, prompts } = createSequencedClient([
+      JSON.stringify({
+        type: "tool_call",
+        tool: "list_directory",
+        arguments: { path: "." },
+      }),
+      JSON.stringify({
+        type: "tool_call",
+        tool: "read_file",
+        arguments: { path: "../outside.md" },
+      }),
+      JSON.stringify({
+        type: "final_answer",
+        answer: "La ruta fue rechazada.",
+        evidence: ["obs-1"],
+      }),
     ]);
 
     await expect(runAgent("Completa la tarea.", createConfig(), client)).resolves.toBe(
       "La ruta fue rechazada.",
     );
-    expect(prompts).toHaveLength(2);
-    expect(prompts[1]).toContain('"status": "error"');
-    expect(prompts[1]).toContain("La ruta intenta salir de la carpeta sandbox.");
+    expect(prompts).toHaveLength(3);
+    expect(prompts[2]).toContain('"id": "obs-2"');
+    expect(prompts[2]).toContain('"status": "error"');
+    expect(prompts[2]).toContain("La ruta intenta salir de la carpeta sandbox.");
   });
 
   it("stops after the configured maximum number of non-terminal steps", async () => {
@@ -145,14 +257,18 @@ describe("runAgent", () => {
     expect(prompts).toHaveLength(2);
   });
 
-  it("returns a valid final answer without calling a real Ollama client", async () => {
-    const { client, prompts } = createSequencedClient([
+  it("requires evidence in every final answer", async () => {
+    const { client } = createSequencedClient([
+      JSON.stringify({
+        type: "tool_call",
+        tool: "list_directory",
+        arguments: { path: "." },
+      }),
       JSON.stringify({ type: "final_answer", answer: "Respuesta simulada." }),
     ]);
 
-    await expect(runAgent("Responde brevemente.", createConfig(), client)).resolves.toBe(
-      "Respuesta simulada.",
+    await expect(runAgent("Responde brevemente.", createConfig(), client)).rejects.toThrow(
+      "La decisión fue rechazada por Zod.",
     );
-    expect(prompts).toHaveLength(1);
   });
 });

@@ -11,7 +11,7 @@ Gemma propone una decisión; el harness valida y ejecuta. El modelo no tiene acc
 | `list_directory` | Listar nombres y tipos dentro del sandbox. | Leer contenido, modificar o salir del sandbox. |
 | `read_file` | Leer texto permitido dentro del sandbox. | Escribir, ejecutar, leer rutas externas o archivos grandes/no permitidos. |
 
-`final_answer` es una decisión del agent loop y no una tool registrada.
+`final_answer` es una decisión del agent loop y no una tool registrada. Solo se habilita después de una observación exitosa y debe citar uno o más IDs de evidencia del loop actual.
 
 ## Restricciones aplicadas por código
 
@@ -22,6 +22,7 @@ Gemma propone una decisión; el harness valida y ejecuta. El modelo no tiene acc
 - Cada lectura está limitada por `MAX_FILE_BYTES`.
 - Los listados se limitan con `MAX_DIRECTORY_ENTRIES`.
 - Las decisiones y argumentos se validan con JSON Schema y Zod.
+- Cada referencia de `final_answer.evidence` debe existir y corresponder a una observación exitosa; las observaciones fallidas y los IDs inventados se rechazan.
 - El loop termina al alcanzar `AGENT_MAX_STEPS`.
 
 ## Datos no confiables
