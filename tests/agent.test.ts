@@ -49,13 +49,7 @@ function createSequencedClient(
         }
 
         if (decision.type === "tool_call") {
-          return JSON.stringify({
-            ...decision,
-            resolved_requirements:
-              "resolved_requirements" in decision
-                ? decision.resolved_requirements
-                : [],
-          });
+          return JSON.stringify(decision);
         }
 
         if (decision.type === "final_answer") {
@@ -322,13 +316,15 @@ describe("runAgent", () => {
           type: "tool_call",
           tool: "read_file",
           arguments: { path: "notes.md" },
-          resolved_requirements: [{ id: "req-2", evidence: ["obs-2"] }],
         }),
         JSON.stringify({
           type: "final_answer",
           answer: "El autor es Mich DM y los tests usan Vitest.",
           evidence: ["obs-2", "obs-3"],
-          resolved_requirements: [{ id: "req-1", evidence: ["obs-3"] }],
+          resolved_requirements: [
+            { id: "req-1", evidence: ["obs-3"] },
+            { id: "req-2", evidence: ["obs-2"] },
+          ],
         }),
       ],
       [
@@ -345,8 +341,9 @@ describe("runAgent", () => {
       ),
     ).resolves.toBe("El autor es Mich DM y los tests usan Vitest.");
     expect(prompts[4]).toContain('"id": "req-2"');
-    expect(prompts[4]).toContain('"status": "resolved"');
-    expect(prompts[4]).toContain('"evidence": [\n      "obs-2"\n    ]');
+    expect(prompts[4]).toContain('"status": "pending"');
+    expect(prompts[4]).toContain('"id": "obs-2"');
+    expect(prompts[4]).toContain('"id": "obs-3"');
   });
 
   it("rejects a requirement resolution for an unknown requirement", async () => {

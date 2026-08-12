@@ -429,6 +429,8 @@ Antes de usar tools, el modelo declara los requisitos independientes de la solic
 
 `final_answer` se rechaza si queda alguno pendiente. Esta regla limita fuentes estructuralmente insuficientes, pero no valida todavía que una lectura pruebe semánticamente una afirmación.
 
+Las tool calls no resuelven requisitos: solo investigan y producen observaciones. La decisión `final_answer` resuelve todos los requisitos pendientes usando evidencia que ya existe en el loop.
+
 ---
 
 ## Máquina de estados

@@ -65,9 +65,9 @@ El primer turno del loop solo permite la decisión `task_requirements`. El mismo
 - `discovery` solo puede resolverse con `list_directory` exitoso.
 - `content` solo puede resolverse con `read_file` exitoso.
 
-En decisiones posteriores, `resolved_requirements` puede marcar requisitos pendientes con evidencia de observaciones exitosas ya disponibles. El harness valida IDs, tipo de fuente, evita resoluciones duplicadas y conserva la evidencia por requisito. La fase de planificación cuenta como un paso de `AGENT_MAX_STEPS`.
+Las `tool_call` solo investigan y producen observaciones; no incluyen progreso de requisitos. La fase de planificación cuenta como un paso de `AGENT_MAX_STEPS`.
 
-`final_answer` conserva su campo `evidence` global y debe incluir `resolved_requirements`. Tras aplicar esas actualizaciones, el harness rechaza la respuesta si algún requisito sigue pendiente. Esto evita finalizar con evidencia para solo una parte del objetivo, sin intentar todavía verificar que una observación pruebe semánticamente una afirmación.
+`final_answer` conserva su campo `evidence` global y debe incluir `resolved_requirements` para todos los requisitos pendientes. El harness valida IDs y tipos de fuente, aplica las resoluciones y rechaza la respuesta si queda alguno pendiente. Esto evita finalizar con evidencia para solo una parte del objetivo, sin intentar todavía verificar que una observación pruebe semánticamente una afirmación.
 
 ## Llamadas redundantes
 
