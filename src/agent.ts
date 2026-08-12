@@ -189,6 +189,25 @@ function applyRequirementResolutions(
   }
 }
 
+function validateFinalAnswerEvidenceCoverage(
+  evidence: string[],
+  resolutions: Array<{ id: string; evidence: string[] }>,
+): void {
+  const finalAnswerEvidence = new Set(evidence);
+  const requirementEvidence = new Set(
+    resolutions.flatMap((resolution) => resolution.evidence),
+  );
+  const missingEvidence = [...requirementEvidence].filter(
+    (observationId) => !finalAnswerEvidence.has(observationId),
+  );
+
+  if (missingEvidence.length > 0) {
+    throw new Error(
+      `final_answer.evidence debe incluir la evidencia de requisitos resueltos: ${missingEvidence.join(", ")}.`,
+    );
+  }
+}
+
 function validateRequirementEvidenceSources(
   requirement: TaskRequirement,
   evidence: string[],
@@ -332,6 +351,8 @@ function createPrompt(
     "- list_directory no devuelve contenido.",
     "- Un requisito discovery se resuelve con list_directory; un requisito content se resuelve con read_file.",
     "- Un listado de nombres no demuestra contenido de archivos.",
+    "- Usa discovery solo si la respuesta se obtiene de nombres, rutas, tipos de archivo o carpetas.",
+    "- Ante duda, usa content: scripts, dependencias y datos como el autor requieren contenido de archivos.",
     "- No interpretes el campo name de un package.json como autor sin evidencia explícita.",
     "- Usa rutas relativas dentro de sandbox; para la raíz usa '.'.",
     "- No inventes nombres ni contenidos.",
@@ -461,6 +482,10 @@ export async function runAgent(
         observations,
       );
       validateEvidenceReferences(decision.evidence, observations);
+      validateFinalAnswerEvidenceCoverage(
+        decision.evidence,
+        decision.resolved_requirements,
+      );
 
       const pendingRequirements = getPendingRequirementIds(requirements);
 

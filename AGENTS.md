@@ -427,9 +427,13 @@ Antes de usar tools, el modelo declara los requisitos independientes de la solic
 - `discovery` se resuelve solo con una observación exitosa de `list_directory`.
 - `content` se resuelve solo con una observación exitosa de `read_file`.
 
+`discovery` se reserva para respuestas basadas en nombres, rutas, tipos de archivo o carpetas. Ante duda, el modelo debe elegir `content`: scripts, dependencias y datos como autor requieren contenido de archivos.
+
 `final_answer` se rechaza si queda alguno pendiente. Esta regla limita fuentes estructuralmente insuficientes, pero no valida todavía que una lectura pruebe semánticamente una afirmación.
 
 Las tool calls no resuelven requisitos: solo investigan y producen observaciones. La decisión `final_answer` resuelve todos los requisitos pendientes usando evidencia que ya existe en el loop.
+
+`final_answer.evidence` debe incluir, como mínimo, la unión de las evidencias citadas en todos sus `resolved_requirements`.
 
 ---
 

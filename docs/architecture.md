@@ -65,9 +65,11 @@ El primer turno del loop solo permite la decisión `task_requirements`. El mismo
 - `discovery` solo puede resolverse con `list_directory` exitoso.
 - `content` solo puede resolverse con `read_file` exitoso.
 
+`discovery` se usa solo cuando la respuesta sale de nombres, rutas, tipos o carpetas. Ante duda, el modelo debe elegir `content`; scripts, dependencias y datos como el autor necesitan contenido de archivos.
+
 Las `tool_call` solo investigan y producen observaciones; no incluyen progreso de requisitos. La fase de planificación cuenta como un paso de `AGENT_MAX_STEPS`.
 
-`final_answer` conserva su campo `evidence` global y debe incluir `resolved_requirements` para todos los requisitos pendientes. El harness valida IDs y tipos de fuente, aplica las resoluciones y rechaza la respuesta si queda alguno pendiente. Esto evita finalizar con evidencia para solo una parte del objetivo, sin intentar todavía verificar que una observación pruebe semánticamente una afirmación.
+`final_answer` conserva su campo `evidence` global y debe incluir `resolved_requirements` para todos los requisitos pendientes. El harness valida IDs y tipos de fuente, y exige que la evidencia global incluya la unión de evidencias de cada requisito resuelto. Después aplica las resoluciones y rechaza la respuesta si queda alguno pendiente. Esto evita finalizar con evidencia para solo una parte del objetivo, sin intentar todavía verificar que una observación pruebe semánticamente una afirmación.
 
 ## Llamadas redundantes
 

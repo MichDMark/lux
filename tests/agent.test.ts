@@ -294,6 +294,42 @@ describe("runAgent", () => {
     ).rejects.toThrow("No se puede finalizar: requisitos pendientes: req-1.");
   });
 
+  it("rejects a final answer that omits evidence used by a resolved requirement", async () => {
+    await writeFile(join(sandboxDirectory, "author.md"), "Autor: Mich DM");
+    await writeFile(join(sandboxDirectory, "tests.json"), '{"test":"vitest run"}');
+    const { client } = createSequencedClient(
+      [
+        JSON.stringify({
+          type: "tool_call",
+          tool: "read_file",
+          arguments: { path: "author.md" },
+        }),
+        JSON.stringify({
+          type: "tool_call",
+          tool: "read_file",
+          arguments: { path: "tests.json" },
+        }),
+        JSON.stringify({
+          type: "final_answer",
+          answer: "Respuesta incompleta en trazabilidad.",
+          evidence: ["obs-1"],
+          resolved_requirements: [
+            { id: "req-1", evidence: ["obs-1"] },
+            { id: "req-2", evidence: ["obs-2"] },
+          ],
+        }),
+      ],
+      [
+        { description: "Encontrar el autor.", kind: "content" },
+        { description: "Encontrar la herramienta de tests.", kind: "content" },
+      ],
+    );
+
+    await expect(runAgent("Completa la tarea.", createConfig(), client)).rejects.toThrow(
+      "final_answer.evidence debe incluir la evidencia de requisitos resueltos: obs-2.",
+    );
+  });
+
   it("completes a multi-requirement task only after each requirement has evidence", async () => {
     await writeFile(
       join(sandboxDirectory, "example-package.json"),
