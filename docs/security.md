@@ -23,7 +23,7 @@ Gemma propone una decisión; el harness valida y ejecuta. El modelo no tiene acc
 - Los listados se limitan con `MAX_DIRECTORY_ENTRIES`.
 - Las decisiones y argumentos se validan con JSON Schema y Zod.
 - Cada referencia de `final_answer.evidence` debe existir y corresponder a una observación exitosa; las observaciones fallidas y los IDs inventados se rechazan.
-- Cada requisito resuelto debe citar observaciones exitosas previas; `final_answer` se rechaza mientras exista algún requisito pendiente.
+- Cada requisito resuelto debe citar observaciones exitosas previas de una tool adecuada: `list_directory` para `discovery` y `read_file` para `content`; `final_answer` se rechaza mientras exista algún requisito pendiente.
 - Las llamadas repetidas con la misma tool y argumentos normalizados se bloquean si ya existe un resultado exitoso; la observación `blocked` referencia ese resultado, pero no puede citarse como evidencia.
 - El loop termina al alcanzar `AGENT_MAX_STEPS`.
 

@@ -22,7 +22,7 @@ ollama pull gemma4:e2b
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Endpoint local de Ollama. |
 | `OLLAMA_NUM_CTX` | `4096` | Ventana de contexto por generación. |
 | `OLLAMA_KEEP_ALIVE` | `5m` | Tiempo para mantener cargado el modelo. |
-| `AGENT_MAX_STEPS` | `5` | Máximo de iteraciones del agent loop. |
+| `AGENT_MAX_STEPS` | `7` | Máximo experimental de iteraciones; deja margen para planificación y consultas multiarchivo. |
 | `MAX_FILE_BYTES` | `12000` | Máximo de bytes por lectura de archivo. |
 | `MAX_DIRECTORY_ENTRIES` | `100` | Máximo de entradas devueltas al listar un directorio. |
 | `SANDBOX_DIR` | `sandbox` | Raíz permitida para las tools. |

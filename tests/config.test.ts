@@ -43,7 +43,7 @@ describe("loadConfig", () => {
       ollamaBaseUrl: "http://localhost:11434",
       numCtx: 4096,
       keepAlive: "5m",
-      maxSteps: 5,
+      maxSteps: 7,
       maxFileBytes: 12_000,
       maxDirectoryEntries: 100,
       verbose: true,

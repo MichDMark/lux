@@ -27,7 +27,7 @@ function createConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
 
 function createSequencedClient(
   responses: string[],
-  requirementDescriptions = ["Completar la solicitud."],
+  requirements = [{ description: "Completar la solicitud.", kind: "content" as const }],
 ): {
   client: AgentLlmClient;
   prompts: string[];
@@ -38,7 +38,7 @@ function createSequencedClient(
   const plannedResponses = [
     JSON.stringify({
       type: "task_requirements",
-      requirements: requirementDescriptions.map((description) => ({ description })),
+      requirements,
     }),
     ...responses.map((response) => {
       try {
@@ -164,18 +164,21 @@ describe("runAgent", () => {
   });
 
   it("uses DIRECTORY_EVIDENCE after listing and accepts a valid reference", async () => {
-    const { client, prompts, formats } = createSequencedClient([
-      JSON.stringify({
-        type: "tool_call",
-        tool: "list_directory",
-        arguments: { path: "." },
-      }),
-      JSON.stringify({
-        type: "final_answer",
-        answer: "Directorio inspeccionado.",
-        evidence: ["obs-1"],
-      }),
-    ]);
+    const { client, prompts, formats } = createSequencedClient(
+      [
+        JSON.stringify({
+          type: "tool_call",
+          tool: "list_directory",
+          arguments: { path: "." },
+        }),
+        JSON.stringify({
+          type: "final_answer",
+          answer: "Directorio inspeccionado.",
+          evidence: ["obs-1"],
+        }),
+      ],
+      [{ description: "Descubrir el directorio.", kind: "discovery" }],
+    );
 
     await expect(runAgent("Responde brevemente.", createConfig(), client)).resolves.toBe(
       "Directorio inspeccionado.",
@@ -184,6 +187,49 @@ describe("runAgent", () => {
     const secondStepSchema = JSON.stringify(formats[2]);
     expect(secondStepSchema).toContain("final_answer");
     expect(secondStepSchema).toContain("obs-1");
+  });
+
+  it("allows list_directory to resolve a discovery requirement", async () => {
+    const { client } = createSequencedClient(
+      [
+        JSON.stringify({
+          type: "tool_call",
+          tool: "list_directory",
+          arguments: { path: "." },
+        }),
+        JSON.stringify({
+          type: "final_answer",
+          answer: "Hay archivos disponibles.",
+          evidence: ["obs-1"],
+          resolved_requirements: [{ id: "req-1", evidence: ["obs-1"] }],
+        }),
+      ],
+      [{ description: "Descubrir archivos disponibles.", kind: "discovery" }],
+    );
+
+    await expect(runAgent("¿Qué archivos hay?", createConfig(), client)).resolves.toBe(
+      "Hay archivos disponibles.",
+    );
+  });
+
+  it("rejects list_directory as evidence for a content requirement", async () => {
+    const { client } = createSequencedClient([
+      JSON.stringify({
+        type: "tool_call",
+        tool: "list_directory",
+        arguments: { path: "." },
+      }),
+      JSON.stringify({
+        type: "final_answer",
+        answer: "Respuesta indebida.",
+        evidence: ["obs-1"],
+        resolved_requirements: [{ id: "req-1", evidence: ["obs-1"] }],
+      }),
+    ]);
+
+    await expect(runAgent("Dime el autor.", createConfig(), client)).rejects.toThrow(
+      "La evidencia obs-1 no puede resolver el requisito req-1 de tipo content.",
+    );
   });
 
   it("uses FILE_EVIDENCE and assigns unique IDs to successful observations", async () => {
@@ -203,6 +249,7 @@ describe("runAgent", () => {
         type: "final_answer",
         answer: "Archivo leído.",
         evidence: ["obs-1", "obs-2"],
+        resolved_requirements: [{ id: "req-1", evidence: ["obs-2"] }],
       }),
     ]);
 
@@ -238,7 +285,10 @@ describe("runAgent", () => {
           resolved_requirements: [{ id: "req-2", evidence: ["obs-2"] }],
         }),
       ],
-      ["Encontrar el nombre del autor.", "Encontrar la herramienta de tests."],
+      [
+        { description: "Encontrar el nombre del autor.", kind: "content" },
+        { description: "Encontrar la herramienta de tests.", kind: "content" },
+      ],
     );
 
     await expect(
@@ -281,7 +331,10 @@ describe("runAgent", () => {
           resolved_requirements: [{ id: "req-1", evidence: ["obs-3"] }],
         }),
       ],
-      ["Encontrar el nombre del autor.", "Encontrar la herramienta de tests."],
+      [
+        { description: "Encontrar el nombre del autor.", kind: "content" },
+        { description: "Encontrar la herramienta de tests.", kind: "content" },
+      ],
     );
 
     await expect(
@@ -367,23 +420,26 @@ describe("runAgent", () => {
     }
 
     const executeSpy = vi.spyOn(listDirectory, "execute");
-    const { client, prompts } = createSequencedClient([
-      JSON.stringify({
-        type: "tool_call",
-        tool: "list_directory",
-        arguments: { path: "." },
-      }),
-      JSON.stringify({
-        type: "tool_call",
-        tool: "list_directory",
-        arguments: { path: "." },
-      }),
-      JSON.stringify({
-        type: "final_answer",
-        answer: "Directorio reutilizado.",
-        evidence: ["obs-1"],
-      }),
-    ]);
+    const { client, prompts } = createSequencedClient(
+      [
+        JSON.stringify({
+          type: "tool_call",
+          tool: "list_directory",
+          arguments: { path: "." },
+        }),
+        JSON.stringify({
+          type: "tool_call",
+          tool: "list_directory",
+          arguments: { path: "." },
+        }),
+        JSON.stringify({
+          type: "final_answer",
+          answer: "Directorio reutilizado.",
+          evidence: ["obs-1"],
+        }),
+      ],
+      [{ description: "Descubrir el directorio.", kind: "discovery" }],
+    );
 
     await expect(runAgent("Responde brevemente.", createConfig(), client)).resolves.toBe(
       "Directorio reutilizado.",
@@ -483,23 +539,26 @@ describe("runAgent", () => {
   });
 
   it("records a tool error and lets a later valid final answer finish", async () => {
-    const { client, prompts } = createSequencedClient([
-      JSON.stringify({
-        type: "tool_call",
-        tool: "list_directory",
-        arguments: { path: "." },
-      }),
-      JSON.stringify({
-        type: "tool_call",
-        tool: "read_file",
-        arguments: { path: "../outside.md" },
-      }),
-      JSON.stringify({
-        type: "final_answer",
-        answer: "La ruta fue rechazada.",
-        evidence: ["obs-1"],
-      }),
-    ]);
+    const { client, prompts } = createSequencedClient(
+      [
+        JSON.stringify({
+          type: "tool_call",
+          tool: "list_directory",
+          arguments: { path: "." },
+        }),
+        JSON.stringify({
+          type: "tool_call",
+          tool: "read_file",
+          arguments: { path: "../outside.md" },
+        }),
+        JSON.stringify({
+          type: "final_answer",
+          answer: "La ruta fue rechazada.",
+          evidence: ["obs-1"],
+        }),
+      ],
+      [{ description: "Descubrir el directorio.", kind: "discovery" }],
+    );
 
     await expect(runAgent("Completa la tarea.", createConfig(), client)).resolves.toBe(
       "La ruta fue rechazada.",

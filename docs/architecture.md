@@ -60,9 +60,12 @@ El JSON Schema solo ofrece IDs de observaciones exitosas y el harness vuelve a v
 
 ## Estado de tarea
 
-El primer turno del loop solo permite la decisión `task_requirements`. El mismo LLM enumera entre uno y cinco requisitos independientes; el harness les asigna `req-1`, `req-2`, etc. y los inicia como `pending`.
+El primer turno del loop solo permite la decisión `task_requirements`. El mismo LLM enumera entre uno y cinco requisitos independientes con tipo `discovery` o `content`; el harness les asigna `req-1`, `req-2`, etc. y los inicia como `pending`.
 
-En decisiones posteriores, `resolved_requirements` puede marcar requisitos pendientes con evidencia de observaciones exitosas ya disponibles. El harness valida IDs, evita resoluciones duplicadas y conserva la evidencia por requisito. La fase de planificación cuenta como un paso de `AGENT_MAX_STEPS`.
+- `discovery` solo puede resolverse con `list_directory` exitoso.
+- `content` solo puede resolverse con `read_file` exitoso.
+
+En decisiones posteriores, `resolved_requirements` puede marcar requisitos pendientes con evidencia de observaciones exitosas ya disponibles. El harness valida IDs, tipo de fuente, evita resoluciones duplicadas y conserva la evidencia por requisito. La fase de planificación cuenta como un paso de `AGENT_MAX_STEPS`.
 
 `final_answer` conserva su campo `evidence` global y debe incluir `resolved_requirements`. Tras aplicar esas actualizaciones, el harness rechaza la respuesta si algún requisito sigue pendiente. Esto evita finalizar con evidencia para solo una parte del objetivo, sin intentar todavía verificar que una observación pruebe semánticamente una afirmación.
 

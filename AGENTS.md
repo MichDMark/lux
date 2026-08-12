@@ -370,7 +370,7 @@ Existe un límite de pasos para impedir loops indefinidos.
 Valor educativo actual de referencia:
 
 ```text
-AGENT_MAX_STEPS=5
+AGENT_MAX_STEPS=7
 ```
 
 No aumentar límites como solución automática a problemas de comportamiento.
@@ -422,7 +422,12 @@ Su contrato incluye las observaciones exitosas que sustentan la respuesta:
 
 El harness comprueba que cada ID exista en el loop actual y corresponda a una observación exitosa. Esta comprobación garantiza trazabilidad, no que el contenido citado demuestre semánticamente la respuesta.
 
-Antes de usar tools, el modelo declara los requisitos independientes de la solicitud mediante `task_requirements`. El harness asigna IDs `req-*`; cada requisito permanece `pending` hasta que una decisión posterior lo marque `resolved` con evidencia exitosa. `final_answer` se rechaza si queda alguno pendiente.
+Antes de usar tools, el modelo declara los requisitos independientes de la solicitud mediante `task_requirements`. Cada requisito tiene tipo `discovery` o `content`; el harness asigna IDs `req-*` y lo inicia como `pending`.
+
+- `discovery` se resuelve solo con una observación exitosa de `list_directory`.
+- `content` se resuelve solo con una observación exitosa de `read_file`.
+
+`final_answer` se rechaza si queda alguno pendiente. Esta regla limita fuentes estructuralmente insuficientes, pero no valida todavía que una lectura pruebe semánticamente una afirmación.
 
 ---
 
@@ -438,7 +443,7 @@ FILE_EVIDENCE      → read_file exitoso; final_answer permitido
 
 Cada observación recibe un ID único y legible (`obs-1`, `obs-2`, …). Si coexisten observaciones de directorio y archivo, `FILE_EVIDENCE` tiene prioridad.
 
-El estado de tarea es independiente del estado de evidencia: indica qué requisitos del objetivo siguen pendientes o se resolvieron, junto con sus IDs de observación. La planificación inicial cuenta como un paso de `AGENT_MAX_STEPS`.
+El estado de tarea es independiente del estado de evidencia: indica qué requisitos del objetivo siguen pendientes o se resolvieron, junto con sus IDs de observación. La planificación inicial cuenta como un paso de `AGENT_MAX_STEPS`. El valor de referencia experimental actual es 7 para dejar margen a consultas multiarchivo; no debe aumentarse automáticamente ante un loop.
 
 ---
 
@@ -540,7 +545,7 @@ OLLAMA_MODEL=gemma4:e2b
 OLLAMA_BASE_URL=http://localhost:11434
 OLLAMA_NUM_CTX=4096
 OLLAMA_KEEP_ALIVE=5m
-AGENT_MAX_STEPS=5
+AGENT_MAX_STEPS=7
 MAX_FILE_BYTES=12000
 MAX_DIRECTORY_ENTRIES=100
 SANDBOX_DIR=sandbox

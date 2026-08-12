@@ -23,7 +23,7 @@ const EnvironmentSchema = z.object({
   OLLAMA_BASE_URL: z.url().default("http://localhost:11434"),
   OLLAMA_NUM_CTX: z.coerce.number().int().positive().default(4096),
   OLLAMA_KEEP_ALIVE: z.string().min(1).default("5m"),
-  AGENT_MAX_STEPS: z.coerce.number().int().positive().max(50).default(5),
+  AGENT_MAX_STEPS: z.coerce.number().int().positive().max(50).default(7),
   MAX_FILE_BYTES: z.coerce.number().int().positive().default(12_000),
   MAX_DIRECTORY_ENTRIES: z.coerce.number().int().positive().default(100),
   SANDBOX_DIR: z.string().min(1).default("sandbox"),
