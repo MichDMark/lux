@@ -16,6 +16,7 @@ function createConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
     ollamaBaseUrl: "http://localhost:11434",
     numCtx: 1024,
     keepAlive: "0s",
+    requestTimeoutMs: 120_000,
     maxSteps: 5,
     maxFileBytes: 12_000,
     maxDirectoryEntries: 100,
@@ -86,7 +87,7 @@ function createSequencedClient(
           throw new Error("El cliente simulado no recibió una respuesta configurada.");
         }
 
-        return { response };
+        return { response, requestDurationMs: 0 };
       },
     },
     prompts,
@@ -123,33 +124,46 @@ describe("runAgent", () => {
     );
   });
 
-  it("rejects a final answer when there is no evidence", async () => {
+  it("recovers from a final answer when there is no compatible evidence", async () => {
+    await writeFile(join(sandboxDirectory, "note.md"), "contenido");
     const { client, prompts } = createSequencedClient([
       JSON.stringify({
         type: "final_answer",
         answer: "Respuesta indebida.",
         evidence: ["obs-1"],
       }),
+      JSON.stringify({
+        type: "tool_call",
+        tool: "read_file",
+        arguments: { path: "note.md" },
+      }),
+      JSON.stringify({
+        type: "final_answer",
+        answer: "Archivo leído.",
+        evidence: ["obs-1"],
+      }),
     ]);
 
-    await expect(runAgent("Responde brevemente.", createConfig(), client)).rejects.toThrow(
-      "El modelo intentó finalizar en un estado no permitido.",
+    await expect(runAgent("Responde brevemente.", createConfig(), client)).resolves.toBe(
+      "Archivo leído.",
     );
-    expect(prompts).toHaveLength(2);
+    expect(prompts[2]).toContain('"id": "feedback-1"');
+    expect(prompts[2]).toContain("El modelo intentó finalizar en un estado no permitido.");
+    expect(prompts[2]).toContain('"status": "pending"');
   });
 
   it("does not offer final_answer in the schema while there is no evidence", async () => {
     const { client, formats } = createSequencedClient([
       JSON.stringify({
-        type: "final_answer",
-        answer: "Respuesta indebida.",
-        evidence: ["obs-1"],
+        type: "tool_call",
+        tool: "list_directory",
+        arguments: { path: "." },
       }),
     ]);
 
-    await expect(runAgent("Responde brevemente.", createConfig(), client)).rejects.toThrow(
-      "El modelo intentó finalizar en un estado no permitido.",
-    );
+    await expect(
+      runAgent("Responde brevemente.", createConfig({ maxSteps: 2 }), client),
+    ).rejects.toThrow("El agente alcanzó el límite de 2 pasos sin terminar.");
 
     const receivedSchema = JSON.stringify(formats[1]);
     expect(receivedSchema).not.toContain("final_answer");
@@ -206,7 +220,104 @@ describe("runAgent", () => {
     );
   });
 
-  it("rejects list_directory as evidence for a content requirement", async () => {
+  it("does not offer final_answer after listing when a content requirement is pending", async () => {
+    await writeFile(join(sandboxDirectory, "note.md"), "contenido");
+    const { client, formats } = createSequencedClient([
+      JSON.stringify({
+        type: "tool_call",
+        tool: "list_directory",
+        arguments: { path: "." },
+      }),
+      JSON.stringify({
+        type: "tool_call",
+        tool: "read_file",
+        arguments: { path: "note.md" },
+      }),
+      JSON.stringify({
+        type: "final_answer",
+        answer: "Archivo leído.",
+        evidence: ["obs-2"],
+        resolved_requirements: [{ id: "req-1", evidence: ["obs-2"] }],
+      }),
+    ]);
+
+    await expect(runAgent("Dime el autor.", createConfig(), client)).resolves.toBe(
+      "Archivo leído.",
+    );
+
+    const schemaAfterListing = JSON.stringify(formats[2]);
+    expect(schemaAfterListing).not.toContain("final_answer");
+    expect(schemaAfterListing).toContain("read_file");
+  });
+
+  it("restricts content requirement evidence to read_file observations in the schema", async () => {
+    await writeFile(join(sandboxDirectory, "note.md"), "contenido");
+    const { client, formats } = createSequencedClient([
+      JSON.stringify({
+        type: "tool_call",
+        tool: "list_directory",
+        arguments: { path: "." },
+      }),
+      JSON.stringify({
+        type: "tool_call",
+        tool: "read_file",
+        arguments: { path: "note.md" },
+      }),
+      JSON.stringify({
+        type: "final_answer",
+        answer: "Archivo leído.",
+        evidence: ["obs-2"],
+        resolved_requirements: [{ id: "req-1", evidence: ["obs-2"] }],
+      }),
+    ]);
+
+    await runAgent("Dime el autor.", createConfig(), client);
+
+    const schemaAfterReading = JSON.stringify(formats[3]);
+    expect(schemaAfterReading).toContain("final_answer");
+    expect(schemaAfterReading).toContain('"enum":["obs-2"]');
+  });
+
+  it("waits for compatible evidence for every requirement kind", async () => {
+    await writeFile(join(sandboxDirectory, "note.md"), "Autor: Mich DM");
+    const { client, formats } = createSequencedClient(
+      [
+        JSON.stringify({
+          type: "tool_call",
+          tool: "list_directory",
+          arguments: { path: "." },
+        }),
+        JSON.stringify({
+          type: "tool_call",
+          tool: "read_file",
+          arguments: { path: "note.md" },
+        }),
+        JSON.stringify({
+          type: "final_answer",
+          answer: "Hay un archivo y el autor es Mich DM.",
+          evidence: ["obs-1", "obs-2"],
+          resolved_requirements: [
+            { id: "req-1", evidence: ["obs-1"] },
+            { id: "req-2", evidence: ["obs-2"] },
+          ],
+        }),
+      ],
+      [
+        { description: "Descubrir los archivos.", kind: "discovery" },
+        { description: "Encontrar el autor.", kind: "content" },
+      ],
+    );
+
+    await expect(runAgent("Completa la tarea.", createConfig(), client)).resolves.toBe(
+      "Hay un archivo y el autor es Mich DM.",
+    );
+
+    expect(JSON.stringify(formats[2])).not.toContain("final_answer");
+    expect(JSON.stringify(formats[3])).toContain("final_answer");
+  });
+
+  it("recovers when final_answer uses list_directory for a content requirement", async () => {
+    await writeFile(join(sandboxDirectory, "note.md"), "contenido");
     const { client } = createSequencedClient([
       JSON.stringify({
         type: "tool_call",
@@ -214,15 +325,26 @@ describe("runAgent", () => {
         arguments: { path: "." },
       }),
       JSON.stringify({
+        type: "tool_call",
+        tool: "read_file",
+        arguments: { path: "note.md" },
+      }),
+      JSON.stringify({
         type: "final_answer",
         answer: "Respuesta indebida.",
-        evidence: ["obs-1"],
+        evidence: ["obs-1", "obs-2"],
         resolved_requirements: [{ id: "req-1", evidence: ["obs-1"] }],
+      }),
+      JSON.stringify({
+        type: "final_answer",
+        answer: "Archivo leído.",
+        evidence: ["obs-2"],
+        resolved_requirements: [{ id: "req-1", evidence: ["obs-2"] }],
       }),
     ]);
 
-    await expect(runAgent("Dime el autor.", createConfig(), client)).rejects.toThrow(
-      "La evidencia obs-1 no puede resolver el requisito req-1 de tipo content.",
+    await expect(runAgent("Dime el autor.", createConfig(), client)).resolves.toBe(
+      "Archivo leído.",
     );
   });
 
@@ -255,7 +377,7 @@ describe("runAgent", () => {
     expect(prompts[3]).toContain('"id": "obs-2"');
   });
 
-  it("rejects a partial final answer when a requirement remains pending", async () => {
+  it("recovers when a final answer leaves a requirement pending", async () => {
     await writeFile(
       join(sandboxDirectory, "example-package.json"),
       '{"scripts":{"test":"vitest run"}}',
@@ -278,6 +400,15 @@ describe("runAgent", () => {
           evidence: ["obs-2"],
           resolved_requirements: [{ id: "req-2", evidence: ["obs-2"] }],
         }),
+        JSON.stringify({
+          type: "final_answer",
+          answer: "Respuesta corregida.",
+          evidence: ["obs-2"],
+          resolved_requirements: [
+            { id: "req-1", evidence: ["obs-2"] },
+            { id: "req-2", evidence: ["obs-2"] },
+          ],
+        }),
       ],
       [
         { description: "Encontrar el nombre del autor.", kind: "content" },
@@ -291,13 +422,13 @@ describe("runAgent", () => {
         createConfig(),
         client,
       ),
-    ).rejects.toThrow("No se puede finalizar: requisitos pendientes: req-1.");
+    ).resolves.toBe("Respuesta corregida.");
   });
 
-  it("rejects a final answer that omits evidence used by a resolved requirement", async () => {
+  it("recovers when final_answer omits evidence used by a resolved requirement", async () => {
     await writeFile(join(sandboxDirectory, "author.md"), "Autor: Mich DM");
     await writeFile(join(sandboxDirectory, "tests.json"), '{"test":"vitest run"}');
-    const { client } = createSequencedClient(
+    const { client, prompts } = createSequencedClient(
       [
         JSON.stringify({
           type: "tool_call",
@@ -318,6 +449,15 @@ describe("runAgent", () => {
             { id: "req-2", evidence: ["obs-2"] },
           ],
         }),
+        JSON.stringify({
+          type: "final_answer",
+          answer: "Respuesta corregida.",
+          evidence: ["obs-1", "obs-2"],
+          resolved_requirements: [
+            { id: "req-1", evidence: ["obs-1"] },
+            { id: "req-2", evidence: ["obs-2"] },
+          ],
+        }),
       ],
       [
         { description: "Encontrar el autor.", kind: "content" },
@@ -325,9 +465,11 @@ describe("runAgent", () => {
       ],
     );
 
-    await expect(runAgent("Completa la tarea.", createConfig(), client)).rejects.toThrow(
-      "final_answer.evidence debe incluir la evidencia de requisitos resueltos: obs-2.",
+    await expect(runAgent("Completa la tarea.", createConfig(), client)).resolves.toBe(
+      "Respuesta corregida.",
     );
+    expect(prompts[4]).toContain('"id": "feedback-1"');
+    expect(prompts[4]).toContain('"status": "pending"');
   });
 
   it("completes a multi-requirement task only after each requirement has evidence", async () => {
@@ -382,12 +524,13 @@ describe("runAgent", () => {
     expect(prompts[4]).toContain('"id": "obs-3"');
   });
 
-  it("rejects a requirement resolution for an unknown requirement", async () => {
+  it("recovers from a requirement resolution for an unknown requirement", async () => {
+    await writeFile(join(sandboxDirectory, "note.md"), "contenido");
     const { client } = createSequencedClient([
       JSON.stringify({
         type: "tool_call",
-        tool: "list_directory",
-        arguments: { path: "." },
+        tool: "read_file",
+        arguments: { path: "note.md" },
       }),
       JSON.stringify({
         type: "final_answer",
@@ -395,38 +538,50 @@ describe("runAgent", () => {
         evidence: ["obs-1"],
         resolved_requirements: [{ id: "req-99", evidence: ["obs-1"] }],
       }),
+      JSON.stringify({
+        type: "final_answer",
+        answer: "Archivo leído.",
+        evidence: ["obs-1"],
+      }),
     ]);
 
-    await expect(runAgent("Responde brevemente.", createConfig(), client)).rejects.toThrow(
-      "El requisito req-99 no existe en la tarea actual.",
+    await expect(runAgent("Responde brevemente.", createConfig(), client)).resolves.toBe(
+      "Archivo leído.",
     );
   });
 
-  it("rejects a final answer that references an observation that does not exist", async () => {
+  it("recovers from a final answer that references an observation that does not exist", async () => {
+    await writeFile(join(sandboxDirectory, "note.md"), "contenido");
     const { client } = createSequencedClient([
       JSON.stringify({
         type: "tool_call",
-        tool: "list_directory",
-        arguments: { path: "." },
+        tool: "read_file",
+        arguments: { path: "note.md" },
       }),
       JSON.stringify({
         type: "final_answer",
         answer: "Respuesta indebida.",
         evidence: ["obs-99"],
       }),
+      JSON.stringify({
+        type: "final_answer",
+        answer: "Archivo leído.",
+        evidence: ["obs-1"],
+      }),
     ]);
 
-    await expect(runAgent("Responde brevemente.", createConfig(), client)).rejects.toThrow(
-      "La evidencia obs-99 no existe en el agent loop actual.",
+    await expect(runAgent("Responde brevemente.", createConfig(), client)).resolves.toBe(
+      "Archivo leído.",
     );
   });
 
-  it("rejects a final answer that references a failed observation", async () => {
+  it("recovers from a final answer that references a failed observation", async () => {
+    await writeFile(join(sandboxDirectory, "note.md"), "contenido");
     const { client } = createSequencedClient([
       JSON.stringify({
         type: "tool_call",
-        tool: "list_directory",
-        arguments: { path: "." },
+        tool: "read_file",
+        arguments: { path: "note.md" },
       }),
       JSON.stringify({
         type: "tool_call",
@@ -438,10 +593,15 @@ describe("runAgent", () => {
         answer: "Respuesta indebida.",
         evidence: ["obs-2"],
       }),
+      JSON.stringify({
+        type: "final_answer",
+        answer: "Archivo leído.",
+        evidence: ["obs-1"],
+      }),
     ]);
 
-    await expect(runAgent("Responde brevemente.", createConfig(), client)).rejects.toThrow(
-      "La evidencia obs-2 no corresponde a una observación exitosa.",
+    await expect(runAgent("Responde brevemente.", createConfig(), client)).resolves.toBe(
+      "Archivo leído.",
     );
   });
 
@@ -484,27 +644,33 @@ describe("runAgent", () => {
     expect(prompts[3]).toContain('"existingObservationId": "obs-1"');
   });
 
-  it("rejects a final answer that references a blocked observation", async () => {
+  it("recovers from a final answer that references a blocked observation", async () => {
+    await writeFile(join(sandboxDirectory, "note.md"), "contenido");
     const { client } = createSequencedClient([
       JSON.stringify({
         type: "tool_call",
-        tool: "list_directory",
-        arguments: { path: "." },
+        tool: "read_file",
+        arguments: { path: "note.md" },
       }),
       JSON.stringify({
         type: "tool_call",
-        tool: "list_directory",
-        arguments: { path: "." },
+        tool: "read_file",
+        arguments: { path: "note.md" },
       }),
       JSON.stringify({
         type: "final_answer",
         answer: "Respuesta indebida.",
         evidence: ["obs-2"],
       }),
+      JSON.stringify({
+        type: "final_answer",
+        answer: "Archivo leído.",
+        evidence: ["obs-1"],
+      }),
     ]);
 
-    await expect(runAgent("Responde brevemente.", createConfig(), client)).rejects.toThrow(
-      "La evidencia obs-2 no corresponde a una observación exitosa.",
+    await expect(runAgent("Responde brevemente.", createConfig(), client)).resolves.toBe(
+      "Archivo leído.",
     );
   });
 

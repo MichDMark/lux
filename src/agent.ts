@@ -55,6 +55,14 @@ type ToolObservation = {
   existingObservationId?: string;
 };
 
+type HarnessFeedback = {
+  id: string;
+  step: number;
+  decision: "final_answer";
+  status: "rejected";
+  error: string;
+};
+
 type EvidenceState = "NO_EVIDENCE" | "DIRECTORY_EVIDENCE" | "FILE_EVIDENCE";
 
 type TaskRequirement = {
@@ -71,6 +79,53 @@ export type AgentLlmClient = {
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function roundMetric(value: number): number {
+  return Math.round(value * 10) / 10;
+}
+
+function nanosecondsToMilliseconds(value: number | undefined): number | undefined {
+  return value === undefined ? undefined : roundMetric(value / 1_000_000);
+}
+
+function tokensPerSecond(
+  tokenCount: number | undefined,
+  durationNanoseconds: number | undefined,
+): number | undefined {
+  if (!tokenCount || !durationNanoseconds) {
+    return undefined;
+  }
+
+  return roundMetric(tokenCount / (durationNanoseconds / 1_000_000_000));
+}
+
+function getGenerationMetrics(step: number, generation: GenerateResult): object {
+  const totalDurationMs = nanosecondsToMilliseconds(generation.total_duration);
+
+  return {
+    paso: step,
+    solicitud_ms: roundMetric(generation.requestDurationMs),
+    ollama_total_ms: totalDurationMs,
+    carga_ms: nanosecondsToMilliseconds(generation.load_duration),
+    prompt: {
+      tokens: generation.prompt_eval_count,
+      evaluacion_ms: nanosecondsToMilliseconds(generation.prompt_eval_duration),
+      tokens_por_segundo: tokensPerSecond(
+        generation.prompt_eval_count,
+        generation.prompt_eval_duration,
+      ),
+    },
+    generacion: {
+      tokens: generation.eval_count,
+      evaluacion_ms: nanosecondsToMilliseconds(generation.eval_duration),
+      tokens_por_segundo: tokensPerSecond(generation.eval_count, generation.eval_duration),
+    },
+    overhead_ms:
+      totalDurationMs === undefined
+        ? undefined
+        : roundMetric(generation.requestDurationMs - totalDurationMs),
+  };
 }
 
 function getEvidenceState(observations: ToolObservation[]): EvidenceState {
@@ -95,14 +150,51 @@ function getEvidenceState(observations: ToolObservation[]): EvidenceState {
   return "NO_EVIDENCE";
 }
 
-function canReturnFinalAnswer(evidenceState: EvidenceState): boolean {
-  return evidenceState !== "NO_EVIDENCE";
-}
-
 function getSuccessfulObservationIds(observations: ToolObservation[]): string[] {
   return observations
     .filter((observation) => observation.status === "success")
     .map((observation) => observation.id);
+}
+
+function getPendingRequirements(requirements: TaskRequirement[]): TaskRequirement[] {
+  return requirements.filter((requirement) => requirement.status === "pending");
+}
+
+function getRequirementEvidenceTools(requirement: TaskRequirement): string[] {
+  return requirement.kind === "discovery" ? ["list_directory"] : ["read_file"];
+}
+
+function getCompatibleObservationIds(
+  requirement: TaskRequirement,
+  observations: ToolObservation[],
+): string[] {
+  const allowedTools = getRequirementEvidenceTools(requirement);
+
+  return observations
+    .filter(
+      (observation) =>
+        observation.status === "success" && allowedTools.includes(observation.tool),
+    )
+    .map((observation) => observation.id);
+}
+
+function getRequirementsWithoutCompatibleEvidence(
+  requirements: TaskRequirement[],
+  observations: ToolObservation[],
+): TaskRequirement[] {
+  return getPendingRequirements(requirements).filter(
+    (requirement) => getCompatibleObservationIds(requirement, observations).length === 0,
+  );
+}
+
+function canReturnFinalAnswer(
+  requirements: TaskRequirement[],
+  observations: ToolObservation[],
+): boolean {
+  return (
+    requirements.length > 0 &&
+    getRequirementsWithoutCompatibleEvidence(requirements, observations).length === 0
+  );
 }
 
 function normalizeArguments(value: unknown): string {
@@ -154,13 +246,12 @@ function validateEvidenceReferences(
   }
 }
 
-function applyRequirementResolutions(
+function validateRequirementResolutions(
   resolutions: Array<{ id: string; evidence: string[] }>,
   requirements: TaskRequirement[],
   observations: ToolObservation[],
 ): void {
   const resolvedIds = new Set<string>();
-  const resolvedRequirements: Array<{ requirement: TaskRequirement; evidence: string[] }> = [];
 
   for (const resolution of resolutions) {
     if (resolvedIds.has(resolution.id)) {
@@ -180,10 +271,20 @@ function applyRequirementResolutions(
     validateEvidenceReferences(resolution.evidence, observations);
     validateRequirementEvidenceSources(requirement, resolution.evidence, observations);
     resolvedIds.add(resolution.id);
-    resolvedRequirements.push({ requirement, evidence: resolution.evidence });
   }
+}
 
-  for (const { requirement, evidence } of resolvedRequirements) {
+function applyRequirementResolutions(
+  resolutions: Array<{ id: string; evidence: string[] }>,
+  requirements: TaskRequirement[],
+): void {
+  for (const { id, evidence } of resolutions) {
+    const requirement = requirements.find((candidate) => candidate.id === id);
+
+    if (!requirement) {
+      throw new Error(`El requisito ${id} no existe en la tarea actual.`);
+    }
+
     requirement.status = "resolved";
     requirement.evidence = evidence;
   }
@@ -213,8 +314,7 @@ function validateRequirementEvidenceSources(
   evidence: string[],
   observations: ToolObservation[],
 ): void {
-  const allowedTools =
-    requirement.kind === "discovery" ? ["list_directory"] : ["read_file"];
+  const allowedTools = getRequirementEvidenceTools(requirement);
 
   for (const observationId of evidence) {
     const observation = observations.find(
@@ -229,31 +329,67 @@ function validateRequirementEvidenceSources(
   }
 }
 
-function getPendingRequirementIds(requirements: TaskRequirement[]): string[] {
-  return requirements
-    .filter((requirement) => requirement.status === "pending")
+function validateFinalAnswer(
+  decision: z.infer<typeof FinalAnswerSchema>,
+  finalAnswerAllowed: boolean,
+  requirements: TaskRequirement[],
+  observations: ToolObservation[],
+): void {
+  if (!finalAnswerAllowed) {
+    throw new Error("El modelo intentó finalizar en un estado no permitido.");
+  }
+
+  validateRequirementResolutions(
+    decision.resolved_requirements,
+    requirements,
+    observations,
+  );
+  validateEvidenceReferences(decision.evidence, observations);
+  validateFinalAnswerEvidenceCoverage(
+    decision.evidence,
+    decision.resolved_requirements,
+  );
+
+  const resolvedRequirementIds = new Set(
+    decision.resolved_requirements.map((resolution) => resolution.id),
+  );
+  const pendingRequirementIds = getPendingRequirements(requirements)
+    .filter((requirement) => !resolvedRequirementIds.has(requirement.id))
     .map((requirement) => requirement.id);
+
+  if (pendingRequirementIds.length > 0) {
+    throw new Error(
+      `No se puede finalizar: requisitos pendientes: ${pendingRequirementIds.join(", ")}.`,
+    );
+  }
 }
 
 function createResolvedRequirementsJsonSchema(
-  pendingRequirementIds: string[],
-  successfulObservationIds: string[],
+  pendingRequirements: TaskRequirement[],
+  observations: ToolObservation[],
 ): Record<string, unknown> {
   return {
     type: "array",
     items: {
-      type: "object",
-      properties: {
-        id: { type: "string", enum: pendingRequirementIds },
-        evidence: {
-          type: "array",
-          items: { type: "string", enum: successfulObservationIds },
-          minItems: 1,
+      oneOf: pendingRequirements.map((requirement) => ({
+        type: "object",
+        properties: {
+          id: { type: "string", enum: [requirement.id] },
+          evidence: {
+            type: "array",
+            items: {
+              type: "string",
+              enum: getCompatibleObservationIds(requirement, observations),
+            },
+            minItems: 1,
+          },
         },
-      },
-      required: ["id", "evidence"],
-      additionalProperties: false,
+        required: ["id", "evidence"],
+        additionalProperties: false,
+      })),
     },
+    minItems: pendingRequirements.length,
+    maxItems: pendingRequirements.length,
   };
 }
 
@@ -276,7 +412,8 @@ function createDecisionJsonSchema(
   tools: ToolDefinition[],
   finalAnswerAllowed: boolean,
   successfulObservationIds: string[],
-  pendingRequirementIds: string[],
+  pendingRequirements: TaskRequirement[],
+  observations: ToolObservation[],
 ): Record<string, unknown> {
   const alternatives = tools.map(createToolCallSchema);
 
@@ -285,15 +422,15 @@ function createDecisionJsonSchema(
       type: "object",
       properties: {
         type: { type: "string", enum: ["final_answer"] },
-        answer: { type: "string" },
+        answer: { type: "string", minLength: 1 },
         evidence: {
           type: "array",
           items: { type: "string", enum: successfulObservationIds },
           minItems: 1,
         },
         resolved_requirements: createResolvedRequirementsJsonSchema(
-          pendingRequirementIds,
-          successfulObservationIds,
+          pendingRequirements,
+          observations,
         ),
       },
       required: ["type", "answer", "evidence", "resolved_requirements"],
@@ -332,6 +469,7 @@ function createTaskRequirementsJsonSchema(): Record<string, unknown> {
 function createPrompt(
   request: string,
   observations: ToolObservation[],
+  feedback: HarnessFeedback[],
   tools: ToolDefinition[],
   evidenceState: EvidenceState,
   finalAnswerAllowed: boolean,
@@ -361,6 +499,7 @@ function createPrompt(
     "- Reutiliza las observaciones existentes; si necesitas información diferente, usa otra tool o argumentos distintos.",
     "- Continúa investigando mientras falte información para algún requisito.",
     "- En final_answer, resuelve todos los requisitos con observaciones exitosas ya disponibles.",
+    "- Corrige los rechazos anteriores del harness; no repitas el mismo final_answer rechazado.",
     `- Estado de evidencia actual: ${evidenceState}.`,
     requirements.length === 0
       ? "- Primero identifica los requisitos independientes de la solicitud con task_requirements; no uses tools ni final_answer todavía."
@@ -380,6 +519,11 @@ function createPrompt(
     observations.length === 0
       ? "Todavía no hay resultados de tools."
       : JSON.stringify(observations, null, 2),
+    "",
+    "Rechazos anteriores del harness:",
+    feedback.length === 0
+      ? "Todavía no hay rechazos."
+      : JSON.stringify(feedback, null, 2),
   ].join("\n");
 }
 
@@ -391,6 +535,7 @@ export async function runAgent(
   const tracer = new Tracer(config.verbose);
   const tools = listTools();
   const observations: ToolObservation[] = [];
+  const feedback: HarnessFeedback[] = [];
   const requirements: TaskRequirement[] = [];
 
   tracer.section("INICIO DEL AGENT LOOP");
@@ -399,17 +544,24 @@ export async function runAgent(
     tracer.section(`PASO ${step} DE ${config.maxSteps}`);
 
     const evidenceState = getEvidenceState(observations);
-    const finalAnswerAllowed = canReturnFinalAnswer(evidenceState);
+    const pendingRequirements = getPendingRequirements(requirements);
+    const requirementsWithoutCompatibleEvidence =
+      getRequirementsWithoutCompatibleEvidence(requirements, observations);
+    const finalAnswerAllowed = canReturnFinalAnswer(requirements, observations);
     const successfulObservationIds = getSuccessfulObservationIds(observations);
-    const pendingRequirementIds = getPendingRequirementIds(requirements);
 
     tracer.log(
       "MÁQUINA DE ESTADOS",
-      `${evidenceState}; ${
-        finalAnswerAllowed
-          ? "final_answer está habilitado."
-          : "final_answer está deshabilitado; solo se permiten tools."
-      }`,
+      finalAnswerAllowed
+        ? `${evidenceState}; final_answer está habilitado.`
+        : requirements.length === 0
+          ? `${evidenceState}; final_answer está deshabilitado; primero define los requisitos.`
+          : `${evidenceState}; final_answer está deshabilitado; ${requirementsWithoutCompatibleEvidence
+              .map(
+                (requirement) =>
+                  `${requirement.id} requiere evidencia de ${getRequirementEvidenceTools(requirement).join(" o ")}`,
+              )
+              .join(", ")}.`,
     );
     tracer.object("ESTADO DE TAREA", requirements);
 
@@ -417,6 +569,7 @@ export async function runAgent(
       createPrompt(
         request,
         observations,
+        feedback,
         tools,
         evidenceState,
         finalAnswerAllowed,
@@ -428,9 +581,11 @@ export async function runAgent(
             tools,
             finalAnswerAllowed,
             successfulObservationIds,
-            pendingRequirementIds,
-          ),
+            pendingRequirements,
+            observations,
+      ),
     );
+    tracer.object("MÉTRICAS", getGenerationMetrics(step, generation));
 
     let unknownDecision: unknown;
 
@@ -472,29 +627,29 @@ export async function runAgent(
     }
 
     if (decision.type === "final_answer") {
-      if (!finalAnswerAllowed) {
-        throw new Error("El modelo intentó finalizar en un estado no permitido.");
-      }
-
-      applyRequirementResolutions(
-        decision.resolved_requirements,
-        requirements,
-        observations,
-      );
-      validateEvidenceReferences(decision.evidence, observations);
-      validateFinalAnswerEvidenceCoverage(
-        decision.evidence,
-        decision.resolved_requirements,
-      );
-
-      const pendingRequirements = getPendingRequirementIds(requirements);
-
-      if (pendingRequirements.length > 0) {
-        throw new Error(
-          `No se puede finalizar: requisitos pendientes: ${pendingRequirements.join(", ")}.`,
+      try {
+        validateFinalAnswer(
+          decision,
+          finalAnswerAllowed,
+          requirements,
+          observations,
         );
+      } catch (error: unknown) {
+        const rejection: HarnessFeedback = {
+          id: `feedback-${feedback.length + 1}`,
+          step,
+          decision: "final_answer",
+          status: "rejected",
+          error: getErrorMessage(error),
+        };
+
+        feedback.push(rejection);
+        tracer.log("HARNESS", `${rejection.id}: ${rejection.error}`);
+        tracer.object(`FEEDBACK ${rejection.id}`, rejection);
+        continue;
       }
 
+      applyRequirementResolutions(decision.resolved_requirements, requirements);
       return decision.answer;
     }
 

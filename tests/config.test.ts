@@ -7,6 +7,7 @@ const environmentKeys = [
   "OLLAMA_BASE_URL",
   "OLLAMA_NUM_CTX",
   "OLLAMA_KEEP_ALIVE",
+  "OLLAMA_REQUEST_TIMEOUT_MS",
   "AGENT_MAX_STEPS",
   "MAX_FILE_BYTES",
   "MAX_DIRECTORY_ENTRIES",
@@ -43,6 +44,7 @@ describe("loadConfig", () => {
       ollamaBaseUrl: "http://localhost:11434",
       numCtx: 4096,
       keepAlive: "5m",
+      requestTimeoutMs: 120_000,
       maxSteps: 7,
       maxFileBytes: 12_000,
       maxDirectoryEntries: 100,
@@ -71,8 +73,14 @@ describe("loadConfig", () => {
   });
 
   it("rejects invalid environment values", () => {
-    process.env.AGENT_MAX_STEPS = "0";
+    process.env.OLLAMA_REQUEST_TIMEOUT_MS = "0";
 
     expect(() => loadConfig()).toThrow();
+  });
+
+  it("uses the configured request timeout", () => {
+    process.env.OLLAMA_REQUEST_TIMEOUT_MS = "360000";
+
+    expect(loadConfig().requestTimeoutMs).toBe(360_000);
   });
 });

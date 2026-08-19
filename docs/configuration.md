@@ -22,6 +22,7 @@ ollama pull gemma4:e2b
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Endpoint local de Ollama. |
 | `OLLAMA_NUM_CTX` | `4096` | Ventana de contexto por generación. |
 | `OLLAMA_KEEP_ALIVE` | `5m` | Tiempo para mantener cargado el modelo. |
+| `OLLAMA_REQUEST_TIMEOUT_MS` | `120000` | Límite por petición a Ollama, en milisegundos. |
 | `AGENT_MAX_STEPS` | `7` | Máximo experimental de iteraciones; deja margen para planificación y consultas multiarchivo. |
 | `MAX_FILE_BYTES` | `12000` | Máximo de bytes por lectura de archivo. |
 | `MAX_DIRECTORY_ENTRIES` | `100` | Máximo de entradas devueltas al listar un directorio. |
@@ -29,6 +30,8 @@ ollama pull gemma4:e2b
 | `AGENT_VERBOSE` | `true` | Activa las trazas educativas. |
 
 `.env` es local y no debe versionarse. `SANDBOX_DIR` admite una ruta absoluta o una ruta relativa a la raíz del proyecto.
+
+Con `AGENT_VERBOSE=true`, LUX muestra métricas por turno de Ollama: carga del modelo, evaluación del prompt, generación y tiempo total. Las duraciones de Ollama se convierten de nanosegundos a milisegundos; las tasas se muestran en tokens por segundo. Para investigar un modelo lento, puede aumentarse temporalmente `OLLAMA_REQUEST_TIMEOUT_MS` sin cambiar su valor predeterminado.
 
 ## CLI
 

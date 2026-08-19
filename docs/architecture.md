@@ -34,17 +34,21 @@ Usuario → CLI → configuración → agent loop → Ollama
 | Tools | Capacidades explícitas, validación y operaciones de solo lectura. |
 | Tracer | Eventos observables del harness; no razonamiento privado del modelo. |
 
+## Métricas de inferencia
+
+En modo verbose, el agent loop registra por turno las métricas devueltas por Ollama y la duración de pared medida por LUX. Incluye carga, tokens y tiempo de evaluación del prompt, tokens y tiempo de generación, duración total de Ollama y diferencia entre esta y la petición local. Estas métricas permiten distinguir un modelo cargando, un prompt que crece o una generación lenta. Si una petición alcanza `OLLAMA_REQUEST_TIMEOUT_MS`, LUX informa el límite y el tiempo transcurrido, pero Ollama no devuelve métricas finales para ese turno.
+
 ## Estado y evidencia
 
-Cada paso permite solo las decisiones incluidas en el JSON Schema enviado a Ollama. El estado se deriva de observaciones exitosas existentes:
+Cada paso permite solo las decisiones incluidas en el JSON Schema enviado a Ollama. El estado de evidencia se deriva de observaciones exitosas existentes:
 
 ```text
-NO_EVIDENCE        → final_answer prohibido
-DIRECTORY_EVIDENCE → list_directory exitoso; final_answer permitido
-FILE_EVIDENCE      → read_file exitoso; final_answer permitido
+NO_EVIDENCE        → no hay observaciones exitosas
+DIRECTORY_EVIDENCE → list_directory exitoso
+FILE_EVIDENCE      → read_file exitoso
 ```
 
-`FILE_EVIDENCE` tiene prioridad si hay ambos tipos de observación. No existe una regex ni otro estado mutable paralelo.
+`FILE_EVIDENCE` tiene prioridad si hay ambos tipos de observación. No existe una regex ni otro estado mutable paralelo. El estado de evidencia por sí solo no habilita `final_answer`: cada requisito pendiente debe tener al menos una observación exitosa de su tool compatible.
 
 Cuando está permitido, `final_answer` debe incluir al menos un ID de evidencia:
 
@@ -69,7 +73,7 @@ El primer turno del loop solo permite la decisión `task_requirements`. El mismo
 
 Las `tool_call` solo investigan y producen observaciones; no incluyen progreso de requisitos. La fase de planificación cuenta como un paso de `AGENT_MAX_STEPS`.
 
-`final_answer` conserva su campo `evidence` global y debe incluir `resolved_requirements` para todos los requisitos pendientes. El harness valida IDs y tipos de fuente, y exige que la evidencia global incluya la unión de evidencias de cada requisito resuelto. Después aplica las resoluciones y rechaza la respuesta si queda alguno pendiente. Esto evita finalizar con evidencia para solo una parte del objetivo, sin intentar todavía verificar que una observación pruebe semánticamente una afirmación.
+`final_answer` conserva su campo `evidence` global y debe incluir `resolved_requirements` para todos los requisitos pendientes. Solo se ofrece en el JSON Schema cuando cada requisito pendiente ya tiene una fuente exitosa compatible. Cada alternativa de `resolved_requirements` restringe sus IDs de evidencia a esa tool compatible. El harness valida nuevamente IDs y tipos de fuente, y exige que la evidencia global incluya la unión de evidencias de cada requisito resuelto. Después aplica las resoluciones solo si toda la respuesta es válida. Si un `final_answer` que ya supera Zod incumple esta política, el harness registra un feedback de rechazo y continúa el loop; ese feedback no es una observación de tool ni evidencia válida. Esto evita finalizar con evidencia para solo una parte del objetivo, sin intentar todavía verificar que una observación pruebe semánticamente una afirmación.
 
 ## Llamadas redundantes
 

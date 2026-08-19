@@ -429,7 +429,7 @@ Antes de usar tools, el modelo declara los requisitos independientes de la solic
 
 `discovery` se reserva para respuestas basadas en nombres, rutas, tipos de archivo o carpetas. Ante duda, el modelo debe elegir `content`: scripts, dependencias y datos como autor requieren contenido de archivos.
 
-`final_answer` se rechaza si queda alguno pendiente. Esta regla limita fuentes estructuralmente insuficientes, pero no valida todavía que una lectura pruebe semánticamente una afirmación.
+`final_answer` se rechaza si queda alguno pendiente. Si una decisión `final_answer` ya válida para Zod incumple la política de evidencia, el harness registra feedback de rechazo y permite un turno posterior para corregirla; ese feedback no es una observación de tool ni evidencia válida. Esta regla limita fuentes estructuralmente insuficientes, pero no valida todavía que una lectura pruebe semánticamente una afirmación.
 
 Las tool calls no resuelven requisitos: solo investigan y producen observaciones. La decisión `final_answer` resuelve todos los requisitos pendientes usando evidencia que ya existe en el loop.
 
@@ -442,12 +442,12 @@ Las tool calls no resuelven requisitos: solo investigan y producen observaciones
 El estado se deriva de las observaciones existentes; no depende de palabras clave de la solicitud ni mantiene una segunda fuente mutable de verdad.
 
 ```text
-NO_EVIDENCE        → no hay observaciones exitosas; final_answer prohibido
-DIRECTORY_EVIDENCE → list_directory exitoso; final_answer permitido
-FILE_EVIDENCE      → read_file exitoso; final_answer permitido
+NO_EVIDENCE        → no hay observaciones exitosas
+DIRECTORY_EVIDENCE → list_directory exitoso
+FILE_EVIDENCE      → read_file exitoso
 ```
 
-Cada observación recibe un ID único y legible (`obs-1`, `obs-2`, …). Si coexisten observaciones de directorio y archivo, `FILE_EVIDENCE` tiene prioridad.
+Cada observación recibe un ID único y legible (`obs-1`, `obs-2`, …). Si coexisten observaciones de directorio y archivo, `FILE_EVIDENCE` tiene prioridad. `final_answer` solo se habilita cuando cada requisito pendiente tiene al menos una observación exitosa de su tool compatible; el JSON Schema dinámico restringe los IDs de evidencia de cada requisito a esa tool.
 
 El estado de tarea es independiente del estado de evidencia: indica qué requisitos del objetivo siguen pendientes o se resolvieron, junto con sus IDs de observación. La planificación inicial cuenta como un paso de `AGENT_MAX_STEPS`. El valor de referencia experimental actual es 7 para dejar margen a consultas multiarchivo; no debe aumentarse automáticamente ante un loop.
 
@@ -536,6 +536,8 @@ No presentar estas trazas como razonamiento privado del modelo.
 
 Son eventos observables del harness.
 
+En modo detallado, las métricas por turno incluyen carga, evaluación del prompt, generación, duración total de Ollama y duración de pared de la petición. Las duraciones de Ollama llegan en nanosegundos y se muestran en milisegundos; las tasas se muestran en tokens por segundo. Ante un timeout, registrar el límite configurado y el tiempo transcurrido, sin inferir una causa que Ollama no haya reportado.
+
 Mantener un modo detallado para aprendizaje y un modo silencioso cuando sea útil.
 
 ---
@@ -551,6 +553,7 @@ OLLAMA_MODEL=gemma4:e2b
 OLLAMA_BASE_URL=http://localhost:11434
 OLLAMA_NUM_CTX=4096
 OLLAMA_KEEP_ALIVE=5m
+OLLAMA_REQUEST_TIMEOUT_MS=120000
 AGENT_MAX_STEPS=7
 MAX_FILE_BYTES=12000
 MAX_DIRECTORY_ENTRIES=100
