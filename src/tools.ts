@@ -1,5 +1,5 @@
 import { readFile, readdir, realpath, stat } from "node:fs/promises";
-import { extname, isAbsolute, relative, resolve, sep } from "node:path";
+import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { z } from "zod";
 import type { AgentConfig } from "./config.js";
 import type { Tracer } from "./tracer.js";
@@ -19,6 +19,11 @@ export type ToolDefinition = {
 
 const PathArgumentsSchema = z.strictObject({
   path: z.string().min(1).max(200),
+});
+
+const SearchTextArgumentsSchema = z.strictObject({
+  path: z.string().min(1).max(200),
+  query: z.string().min(1).max(200),
 });
 
 function isPathInside(parentPath: string, childPath: string): boolean {
@@ -81,7 +86,23 @@ const pathArgumentsJsonSchema = {
   additionalProperties: false,
 } as const;
 
+const searchTextArgumentsJsonSchema = {
+  type: "object",
+  properties: {
+    path: { type: "string" },
+    query: { type: "string" },
+  },
+  required: ["path", "query"],
+  additionalProperties: false,
+} as const;
+
 const allowedExtensions = new Set([".txt", ".md", ".json", ".ts"]);
+
+function truncateSnippet(value: string, maximumLength: number): string {
+  return value.length <= maximumLength
+    ? value
+    : `${value.slice(0, maximumLength)}...`;
+}
 
 const readFileTool: ToolDefinition = {
   name: "read_file",
@@ -160,7 +181,104 @@ const listDirectoryTool: ToolDefinition = {
   },
 };
 
-const tools = [readFileTool, listDirectoryTool];
+const searchTextTool: ToolDefinition = {
+  name: "search_text",
+  description:
+    "Busca texto literal dentro de archivos permitidos bajo un directorio de sandbox; solo devuelve coincidencias, no archivos completos.",
+  argumentsJsonSchema: searchTextArgumentsJsonSchema,
+  parseArguments: (value) => SearchTextArgumentsSchema.parse(value),
+
+  async execute(argumentsValue: unknown, context: ToolContext): Promise<unknown> {
+    const args = SearchTextArgumentsSchema.parse(argumentsValue);
+    const realDirectoryPath = await resolveSandboxPath(args.path, context);
+    const directoryStats = await stat(realDirectoryPath);
+
+    if (!directoryStats.isDirectory()) {
+      throw new Error("La ruta no corresponde a un directorio.");
+    }
+
+    const normalizedQuery = args.query.toLowerCase();
+    const matches: Array<{ path: string; line: number; text: string }> = [];
+    let scannedFiles = 0;
+    let truncated = false;
+
+    async function searchDirectory(
+      directoryPath: string,
+      displayPath: string,
+    ): Promise<void> {
+      const entries = (await readdir(directoryPath, { withFileTypes: true })).sort(
+        (left, right) => left.name.localeCompare(right.name),
+      );
+
+      for (const entry of entries) {
+        if (truncated) {
+          return;
+        }
+
+        const entryPath = join(directoryPath, entry.name);
+        const entryDisplayPath =
+          displayPath === "." ? entry.name : join(displayPath, entry.name);
+
+        if (entry.isSymbolicLink()) {
+          continue;
+        }
+
+        if (entry.isDirectory()) {
+          await searchDirectory(entryPath, entryDisplayPath);
+          continue;
+        }
+
+        if (!entry.isFile() || !allowedExtensions.has(extname(entry.name).toLowerCase())) {
+          continue;
+        }
+
+        const fileStats = await stat(entryPath);
+
+        if (fileStats.size > context.config.maxFileBytes) {
+          continue;
+        }
+
+        if (scannedFiles >= context.config.maxSearchFiles) {
+          truncated = true;
+          return;
+        }
+
+        scannedFiles++;
+        const lines = (await readFile(entryPath, "utf8")).split(/\r?\n/);
+
+        for (const [index, line] of lines.entries()) {
+          if (!line.toLowerCase().includes(normalizedQuery)) {
+            continue;
+          }
+
+          matches.push({
+            path: entryDisplayPath,
+            line: index + 1,
+            text: truncateSnippet(line, context.config.maxSearchSnippetChars),
+          });
+
+          if (matches.length >= context.config.maxSearchMatches) {
+            truncated = true;
+            return;
+          }
+        }
+      }
+    }
+
+    await searchDirectory(realDirectoryPath, args.path);
+
+    return {
+      kind: "search",
+      path: args.path,
+      query: args.query,
+      matches,
+      scannedFiles,
+      truncated,
+    };
+  },
+};
+
+const tools = [readFileTool, listDirectoryTool, searchTextTool];
 
 export const toolRegistry = new Map(
   tools.map((tool) => [tool.name, tool] as const),

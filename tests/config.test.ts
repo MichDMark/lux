@@ -11,6 +11,9 @@ const environmentKeys = [
   "AGENT_MAX_STEPS",
   "MAX_FILE_BYTES",
   "MAX_DIRECTORY_ENTRIES",
+  "MAX_SEARCH_FILES",
+  "MAX_SEARCH_MATCHES",
+  "MAX_SEARCH_SNIPPET_CHARS",
   "SANDBOX_DIR",
   "AGENT_VERBOSE",
 ] as const;
@@ -48,6 +51,9 @@ describe("loadConfig", () => {
       maxSteps: 7,
       maxFileBytes: 12_000,
       maxDirectoryEntries: 100,
+      maxSearchFiles: 100,
+      maxSearchMatches: 20,
+      maxSearchSnippetChars: 300,
       verbose: true,
     });
     expect(config.sandboxDirectory).toBe(resolve(config.projectRoot, "sandbox"));
@@ -82,5 +88,17 @@ describe("loadConfig", () => {
     process.env.OLLAMA_REQUEST_TIMEOUT_MS = "360000";
 
     expect(loadConfig().requestTimeoutMs).toBe(360_000);
+  });
+
+  it("uses configured search limits", () => {
+    process.env.MAX_SEARCH_FILES = "40";
+    process.env.MAX_SEARCH_MATCHES = "8";
+    process.env.MAX_SEARCH_SNIPPET_CHARS = "120";
+
+    expect(loadConfig()).toMatchObject({
+      maxSearchFiles: 40,
+      maxSearchMatches: 8,
+      maxSearchSnippetChars: 120,
+    });
   });
 });

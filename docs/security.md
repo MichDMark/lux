@@ -9,6 +9,7 @@ Gemma propone una decisión; el harness valida y ejecuta. El modelo no tiene acc
 | Tool | Permitido | No permitido |
 | --- | --- | --- |
 | `list_directory` | Listar nombres y tipos dentro del sandbox. | Leer contenido, modificar o salir del sandbox. |
+| `search_text` | Localizar texto literal en archivos permitidos dentro del sandbox. | Usar regex, devolver archivos completos, seguir enlaces simbólicos, modificar o salir del sandbox. |
 | `read_file` | Leer texto permitido dentro del sandbox. | Escribir, ejecutar, leer rutas externas o archivos grandes/no permitidos. |
 
 `final_answer` es una decisión del agent loop y no una tool registrada. Solo se habilita cuando cada requisito pendiente tiene una observación exitosa de su tool compatible y debe citar uno o más IDs de evidencia del loop actual.
@@ -21,10 +22,12 @@ Gemma propone una decisión; el harness valida y ejecuta. El modelo no tiene acc
 - `read_file` solo permite `.txt`, `.md`, `.json` y `.ts`.
 - Cada lectura está limitada por `MAX_FILE_BYTES`.
 - Los listados se limitan con `MAX_DIRECTORY_ENTRIES`.
+- `search_text` recorre solo archivos regulares permitidos, omite enlaces simbólicos y archivos grandes, y limita archivos examinados, coincidencias y fragmentos con `MAX_SEARCH_FILES`, `MAX_SEARCH_MATCHES` y `MAX_SEARCH_SNIPPET_CHARS`.
 - Las decisiones y argumentos se validan con JSON Schema y Zod.
 - Cada referencia de `final_answer.evidence` debe existir y corresponder a una observación exitosa; las observaciones fallidas y los IDs inventados se rechazan.
 - `final_answer.evidence` debe incluir todas las observaciones usadas para resolver requisitos; no puede omitir evidencia citada en `resolved_requirements`.
 - Cada requisito resuelto debe citar observaciones exitosas previas de una tool adecuada: `list_directory` para `discovery` y `read_file` para `content`. El JSON Schema dinámico expone para cada requisito solo los IDs compatibles y el harness valida la misma regla como defensa adicional; si un `final_answer` válido para Zod incumple la política, se devuelve feedback al modelo sin convertirlo en evidencia ni conceder capacidades.
+- `search_text` es una herramienta de localización: no resuelve requisitos ni es evidencia válida para `final_answer`.
 - Las llamadas repetidas con la misma tool y argumentos normalizados se bloquean si ya existe un resultado exitoso; la observación `blocked` referencia ese resultado, pero no puede citarse como evidencia.
 - El loop termina al alcanzar `AGENT_MAX_STEPS`.
 

@@ -71,6 +71,8 @@ El primer turno del loop solo permite la decisión `task_requirements`. El mismo
 
 `discovery` se usa solo cuando la respuesta sale de nombres, rutas, tipos o carpetas. Ante duda, el modelo debe elegir `content`; scripts, dependencias y datos como el autor necesitan contenido de archivos.
 
+`search_text` localiza coincidencias textuales en archivos permitidos para orientar la siguiente lectura. Sus resultados no resuelven requisitos: un requisito `content` mantiene la exigencia de evidencia de `read_file`.
+
 Las `tool_call` solo investigan y producen observaciones; no incluyen progreso de requisitos. La fase de planificación cuenta como un paso de `AGENT_MAX_STEPS`.
 
 `final_answer` conserva su campo `evidence` global y debe incluir `resolved_requirements` para todos los requisitos pendientes. Solo se ofrece en el JSON Schema cuando cada requisito pendiente ya tiene una fuente exitosa compatible. Cada alternativa de `resolved_requirements` restringe sus IDs de evidencia a esa tool compatible. El harness valida nuevamente IDs y tipos de fuente, y exige que la evidencia global incluya la unión de evidencias de cada requisito resuelto. Después aplica las resoluciones solo si toda la respuesta es válida. Si un `final_answer` que ya supera Zod incumple esta política, el harness registra un feedback de rechazo y continúa el loop; ese feedback no es una observación de tool ni evidencia válida. Esto evita finalizar con evidencia para solo una parte del objetivo, sin intentar todavía verificar que una observación pruebe semánticamente una afirmación.

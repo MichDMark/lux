@@ -27,6 +27,9 @@ const EnvironmentSchema = z.object({
   AGENT_MAX_STEPS: z.coerce.number().int().positive().max(50).default(7),
   MAX_FILE_BYTES: z.coerce.number().int().positive().default(12_000),
   MAX_DIRECTORY_ENTRIES: z.coerce.number().int().positive().default(100),
+  MAX_SEARCH_FILES: z.coerce.number().int().positive().default(100),
+  MAX_SEARCH_MATCHES: z.coerce.number().int().positive().default(20),
+  MAX_SEARCH_SNIPPET_CHARS: z.coerce.number().int().positive().default(300),
   SANDBOX_DIR: z.string().min(1).default("sandbox"),
   AGENT_VERBOSE: z
     .string()
@@ -52,6 +55,9 @@ export type AgentConfig = {
   maxSteps: number;
   maxFileBytes: number;
   maxDirectoryEntries: number;
+  maxSearchFiles: number;
+  maxSearchMatches: number;
+  maxSearchSnippetChars: number;
   sandboxDirectory: string;
   verbose: boolean;
 };
@@ -70,6 +76,9 @@ export function loadConfig(overrides: CliOverrides = {}): AgentConfig {
     maxSteps: overrides.maxSteps ?? env.AGENT_MAX_STEPS,
     maxFileBytes: env.MAX_FILE_BYTES,
     maxDirectoryEntries: env.MAX_DIRECTORY_ENTRIES,
+    maxSearchFiles: env.MAX_SEARCH_FILES,
+    maxSearchMatches: env.MAX_SEARCH_MATCHES,
+    maxSearchSnippetChars: env.MAX_SEARCH_SNIPPET_CHARS,
     sandboxDirectory: isAbsolute(sandboxValue)
       ? resolve(sandboxValue)
       : resolve(PROJECT_ROOT, sandboxValue),

@@ -20,6 +20,9 @@ function createConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
     maxSteps: 5,
     maxFileBytes: 12_000,
     maxDirectoryEntries: 100,
+    maxSearchFiles: 100,
+    maxSearchMatches: 20,
+    maxSearchSnippetChars: 300,
     sandboxDirectory,
     verbose: false,
     ...overrides,
@@ -218,6 +221,127 @@ describe("runAgent", () => {
     await expect(runAgent("¿Qué archivos hay?", createConfig(), client)).resolves.toBe(
       "Hay archivos disponibles.",
     );
+  });
+
+  it("does not offer final_answer after search_text for a content requirement", async () => {
+    await writeFile(join(sandboxDirectory, "notes.md"), "Autor: Mich DM");
+    const { client, formats } = createSequencedClient([
+      JSON.stringify({
+        type: "tool_call",
+        tool: "search_text",
+        arguments: { path: ".", query: "autor" },
+      }),
+      JSON.stringify({
+        type: "tool_call",
+        tool: "read_file",
+        arguments: { path: "notes.md" },
+      }),
+      JSON.stringify({
+        type: "final_answer",
+        answer: "El autor es Mich DM.",
+        evidence: ["obs-2"],
+        resolved_requirements: [{ id: "req-1", evidence: ["obs-2"] }],
+      }),
+    ]);
+
+    await expect(runAgent("Dime el autor.", createConfig(), client)).resolves.toBe(
+      "El autor es Mich DM.",
+    );
+
+    expect(JSON.stringify(formats[2])).not.toContain("final_answer");
+    expect(JSON.stringify(formats[2])).toContain("read_file");
+  });
+
+  it("resolves two content requirements from one searched and read file", async () => {
+    await writeFile(
+      join(sandboxDirectory, "notes.md"),
+      "Autor: Mich DM\nPelicula Favorita: Iron Man 1",
+    );
+    const { client } = createSequencedClient(
+      [
+        JSON.stringify({
+          type: "tool_call",
+          tool: "search_text",
+          arguments: { path: ".", query: "autor" },
+        }),
+        JSON.stringify({
+          type: "tool_call",
+          tool: "read_file",
+          arguments: { path: "notes.md" },
+        }),
+        JSON.stringify({
+          type: "final_answer",
+          answer: "El autor es Mich DM y la pelicula favorita es Iron Man 1.",
+          evidence: ["obs-2"],
+          resolved_requirements: [
+            { id: "req-1", evidence: ["obs-2"] },
+            { id: "req-2", evidence: ["obs-2"] },
+          ],
+        }),
+      ],
+      [
+        { description: "Encontrar el autor.", kind: "content" },
+        { description: "Encontrar la pelicula favorita.", kind: "content" },
+      ],
+    );
+
+    await expect(runAgent("Completa la tarea.", createConfig(), client)).resolves.toBe(
+      "El autor es Mich DM y la pelicula favorita es Iron Man 1.",
+    );
+  });
+
+  it("completes a two-file search flow within seven steps", async () => {
+    await writeFile(join(sandboxDirectory, "author.md"), "Autor: Mich DM");
+    await writeFile(
+      join(sandboxDirectory, "favorites.md"),
+      "Pelicula Favorita: Iron Man 1",
+    );
+    const { client } = createSequencedClient(
+      [
+        JSON.stringify({
+          type: "tool_call",
+          tool: "list_directory",
+          arguments: { path: "." },
+        }),
+        JSON.stringify({
+          type: "tool_call",
+          tool: "search_text",
+          arguments: { path: ".", query: "autor" },
+        }),
+        JSON.stringify({
+          type: "tool_call",
+          tool: "search_text",
+          arguments: { path: ".", query: "pelicula favorita" },
+        }),
+        JSON.stringify({
+          type: "tool_call",
+          tool: "read_file",
+          arguments: { path: "author.md" },
+        }),
+        JSON.stringify({
+          type: "tool_call",
+          tool: "read_file",
+          arguments: { path: "favorites.md" },
+        }),
+        JSON.stringify({
+          type: "final_answer",
+          answer: "El autor es Mich DM y la pelicula favorita es Iron Man 1.",
+          evidence: ["obs-4", "obs-5"],
+          resolved_requirements: [
+            { id: "req-1", evidence: ["obs-4"] },
+            { id: "req-2", evidence: ["obs-5"] },
+          ],
+        }),
+      ],
+      [
+        { description: "Encontrar el autor.", kind: "content" },
+        { description: "Encontrar la pelicula favorita.", kind: "content" },
+      ],
+    );
+
+    await expect(
+      runAgent("Completa la tarea.", createConfig({ maxSteps: 7 }), client),
+    ).resolves.toBe("El autor es Mich DM y la pelicula favorita es Iron Man 1.");
   });
 
   it("does not offer final_answer after listing when a content requirement is pending", async () => {

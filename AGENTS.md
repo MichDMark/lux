@@ -292,6 +292,21 @@ Restricciones actuales esperadas:
 - aplicar límite de tamaño;
 - solo lectura.
 
+### `search_text`
+
+Objetivo:
+
+- localizar texto literal relevante dentro de archivos permitidos del sandbox.
+
+No debe:
+
+- devolver archivos completos;
+- usarse como evidencia `content` en `final_answer`;
+- seguir enlaces simbólicos;
+- modificar archivos o salir del sandbox.
+
+Sus resultados orientan una llamada posterior a `read_file`. Debe limitar archivos examinados, coincidencias y fragmentos para proteger tiempo y contexto.
+
 Extensiones iniciales:
 
 ```text
@@ -557,6 +572,9 @@ OLLAMA_REQUEST_TIMEOUT_MS=120000
 AGENT_MAX_STEPS=7
 MAX_FILE_BYTES=12000
 MAX_DIRECTORY_ENTRIES=100
+MAX_SEARCH_FILES=100
+MAX_SEARCH_MATCHES=20
+MAX_SEARCH_SNIPPET_CHARS=300
 SANDBOX_DIR=sandbox
 AGENT_VERBOSE=true
 ```

@@ -16,9 +16,13 @@ function createConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
     ollamaBaseUrl: "http://localhost:11434",
     numCtx: 1024,
     keepAlive: "0s",
+    requestTimeoutMs: 120_000,
     maxSteps: 5,
     maxFileBytes: 32,
     maxDirectoryEntries: 2,
+    maxSearchFiles: 100,
+    maxSearchMatches: 20,
+    maxSearchSnippetChars: 300,
     sandboxDirectory,
     verbose: false,
     ...overrides,
@@ -129,6 +133,90 @@ describe("list_directory", () => {
     ).rejects.toThrow("rutas absolutas");
     await expect(
       executeTool("list_directory", { path: ".." }),
+    ).rejects.toThrow("salir de la carpeta sandbox");
+  });
+});
+
+describe("search_text", () => {
+  it("finds case-insensitive matches in allowed nested files", async () => {
+    await mkdir(join(sandboxDirectory, "nested"));
+    await writeFile(join(sandboxDirectory, "ignored.env"), "Autor: secreto");
+    await writeFile(
+      join(sandboxDirectory, "nested", "notes.md"),
+      "Primera linea\nAUTOR: Mich DM\n",
+    );
+
+    await expect(executeTool("search_text", { path: ".", query: "autor" })).resolves.toEqual({
+      kind: "search",
+      path: ".",
+      query: "autor",
+      matches: [{ path: "nested/notes.md", line: 2, text: "AUTOR: Mich DM" }],
+      scannedFiles: 1,
+      truncated: false,
+    });
+  });
+
+  it("limits matches and snippets", async () => {
+    await writeFile(join(sandboxDirectory, "notes.md"), "Autor: Mich DM\nAutor: Otro");
+
+    await expect(
+      executeTool(
+        "search_text",
+        { path: ".", query: "autor" },
+        createConfig({ maxSearchMatches: 1, maxSearchSnippetChars: 8 }),
+      ),
+    ).resolves.toEqual({
+      kind: "search",
+      path: ".",
+      query: "autor",
+      matches: [{ path: "notes.md", line: 1, text: "Autor: M..." }],
+      scannedFiles: 1,
+      truncated: true,
+    });
+  });
+
+  it("skips oversized files and respects the file scan limit", async () => {
+    await writeFile(join(sandboxDirectory, "large.md"), "x".repeat(33));
+    await writeFile(join(sandboxDirectory, "first.md"), "Autor: Uno");
+    await writeFile(join(sandboxDirectory, "second.md"), "Autor: Dos");
+
+    await expect(
+      executeTool(
+        "search_text",
+        { path: ".", query: "autor" },
+        createConfig({ maxSearchFiles: 1 }),
+      ),
+    ).resolves.toMatchObject({
+      matches: [{ path: "first.md", line: 1, text: "Autor: Uno" }],
+      scannedFiles: 1,
+      truncated: true,
+    });
+  });
+
+  it("does not follow symbolic links", async () => {
+    await writeFile(join(outsideDirectory, "outside.md"), "Autor: externo");
+    await symlink(join(outsideDirectory, "outside.md"), join(sandboxDirectory, "escape.md"));
+
+    await expect(
+      executeTool("search_text", { path: ".", query: "autor" }),
+    ).resolves.toMatchObject({
+      matches: [],
+      scannedFiles: 0,
+      truncated: false,
+    });
+  });
+
+  it("rejects a file, an absolute path, and a parent-directory escape", async () => {
+    await writeFile(join(sandboxDirectory, "note.md"), "Autor: Mich DM");
+
+    await expect(
+      executeTool("search_text", { path: "note.md", query: "autor" }),
+    ).rejects.toThrow("no corresponde a un directorio");
+    await expect(
+      executeTool("search_text", { path: sandboxDirectory, query: "autor" }),
+    ).rejects.toThrow("rutas absolutas");
+    await expect(
+      executeTool("search_text", { path: "..", query: "autor" }),
     ).rejects.toThrow("salir de la carpeta sandbox");
   });
 });
