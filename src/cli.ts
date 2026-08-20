@@ -31,7 +31,7 @@ function readValue(args: string[], index: number, option: string): string {
 function printHelp(): void {
   console.log(`
 Uso:
-  pnpm agent -- [opciones] "solicitud"
+  pnpm lux -- [opciones] "solicitud"
 
 Opciones:
   --model <nombre>       Modelo de Ollama
@@ -58,6 +58,8 @@ async function main(): Promise<void> {
     }
 
     switch (argument) {
+      case "--":
+        break;
       case "--model":
         overrides.model = readValue(args, index, argument);
         index++;

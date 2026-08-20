@@ -41,7 +41,7 @@ Con `AGENT_VERBOSE=true`, LUX muestra métricas por turno de Ollama: carga del m
 ## CLI
 
 ```bash
-pnpm agent -- [opciones] "solicitud"
+pnpm lux -- [opciones] "solicitud"
 ```
 
 Opciones: `--model`, `--sandbox`, `--max-steps`, `--context`, `--list-models`, `--quiet` y `--help`. Las opciones del CLI tienen prioridad sobre las variables correspondientes.
@@ -49,8 +49,8 @@ Opciones: `--model`, `--sandbox`, `--max-steps`, `--context`, `--list-models`, `
 Ejemplos:
 
 ```bash
-pnpm agent -- "¿Qué archivos hay disponibles?"
-pnpm agent -- --model phi4-mini --quiet "Revisa los archivos disponibles"
+pnpm lux -- "¿Qué archivos hay disponibles?"
+pnpm lux -- --model phi4-mini --quiet "Revisa los archivos disponibles"
 pnpm models
 pnpm check
 ```

@@ -143,7 +143,7 @@ LUX ya es una aplicación CLI modular escrita en TypeScript.
 Se ejecuta actualmente mediante:
 
 ```bash
-pnpm agent -- "solicitud"
+pnpm lux -- "solicitud"
 ```
 
 No es todavía un binario autónomo.

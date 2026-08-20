@@ -34,7 +34,7 @@ El archivo `.env` se carga con `process.loadEnvFile()` de Node.js, por lo que no
 ## Ejecutar el agente
 
 ```bash
-pnpm agent -- \
+pnpm lux -- \
   "Revisa los archivos disponibles y dime qué utiliza el proyecto para ejecutar tests"
 ```
 
@@ -53,7 +53,7 @@ pnpm lint                  # Aplica reglas de calidad a código y pruebas.
 pnpm test                  # Ejecuta las pruebas automatizadas.
 pnpm test:watch            # Ejecuta pruebas al guardar cambios.
 pnpm models                # Lista modelos disponibles en Ollama.
-pnpm agent -- --help       # Muestra las opciones del CLI.
+pnpm lux -- --help         # Muestra las opciones del CLI.
 ```
 
 ## Elegir modelo
@@ -61,7 +61,7 @@ pnpm agent -- --help       # Muestra las opciones del CLI.
 Por opción del CLI:
 
 ```bash
-pnpm agent -- \
+pnpm lux -- \
   --model phi4-mini \
   "Revisa los archivos disponibles"
 ```
@@ -70,7 +70,7 @@ Por variable de entorno:
 
 ```bash
 OLLAMA_MODEL=gemma4:e2b \
-pnpm agent -- \
+pnpm lux -- \
   "Revisa los archivos disponibles"
 ```
 
@@ -91,7 +91,7 @@ La opción `--model` tiene prioridad sobre `.env`.
 Ejemplo:
 
 ```bash
-pnpm agent -- \
+pnpm lux -- \
   --model gemma4:e2b \
   --context 4096 \
   --max-steps 5 \
