@@ -444,11 +444,11 @@ Antes de usar tools, el modelo declara los requisitos independientes de la solic
 
 `discovery` se reserva para respuestas basadas en nombres, rutas, tipos de archivo o carpetas. Ante duda, el modelo debe elegir `content`: scripts, dependencias y datos como autor requieren contenido de archivos.
 
-`final_answer` se rechaza si queda alguno pendiente. Si una decisión `final_answer` ya válida para Zod incumple la política de evidencia, el harness registra feedback de rechazo y permite un turno posterior para corregirla; ese feedback no es una observación de tool ni evidencia válida. Esta regla limita fuentes estructuralmente insuficientes, pero no valida todavía que una lectura pruebe semánticamente una afirmación.
+Cada `tool_call` declara `for_requirements` para indicar qué requisitos investiga. Para un requisito `content`, una lectura solo es compatible si su ruta apareció antes en un `search_text` exitoso asociado al mismo requisito. `final_answer` usa `answers`, una respuesta no vacía y evidencia por requisito; se rechaza si queda alguno pendiente. Si una decisión `final_answer` ya válida para Zod incumple la política de evidencia, el harness registra feedback de rechazo y permite un turno posterior para corregirla; ese feedback no es una observación de tool ni evidencia válida. Esta regla limita fuentes estructuralmente insuficientes, pero no valida todavía que una lectura pruebe semánticamente una afirmación.
 
 Las tool calls no resuelven requisitos: solo investigan y producen observaciones. La decisión `final_answer` resuelve todos los requisitos pendientes usando evidencia que ya existe en el loop.
 
-`final_answer.evidence` debe incluir, como mínimo, la unión de las evidencias citadas en todos sus `resolved_requirements`.
+`final_answer.evidence` debe incluir, como mínimo, la unión de las evidencias citadas en todos sus `answers`.
 
 ---
 

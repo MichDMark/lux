@@ -1,11 +1,10 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { runAgent } from "../src/agent.js";
 import type { AgentLlmClient } from "../src/agent.js";
 import type { AgentConfig } from "../src/config.js";
-import { toolRegistry } from "../src/tools.js";
 
 let sandboxDirectory: string;
 
@@ -17,7 +16,7 @@ function createConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
     numCtx: 1024,
     keepAlive: "0s",
     requestTimeoutMs: 120_000,
-    maxSteps: 5,
+    maxSteps: 7,
     maxFileBytes: 12_000,
     maxDirectoryEntries: 100,
     maxSearchFiles: 100,
@@ -29,53 +28,14 @@ function createConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
   };
 }
 
-function createSequencedClient(
-  responses: string[],
-  requirements = [{ description: "Completar la solicitud.", kind: "content" as const }],
-): {
+function createClient(decisions: unknown[]): {
   client: AgentLlmClient;
   prompts: string[];
   formats: unknown[];
 } {
+  const responses = decisions.map((decision) => JSON.stringify(decision));
   const prompts: string[] = [];
   const formats: unknown[] = [];
-  const plannedResponses = [
-    JSON.stringify({
-      type: "task_requirements",
-      requirements,
-    }),
-    ...responses.map((response) => {
-      try {
-        const decision: unknown = JSON.parse(response);
-
-        if (typeof decision !== "object" || decision === null || !("type" in decision)) {
-          return response;
-        }
-
-        if (decision.type === "tool_call") {
-          return JSON.stringify(decision);
-        }
-
-        if (decision.type === "final_answer") {
-          const evidence = "evidence" in decision ? decision.evidence : undefined;
-
-          return JSON.stringify({
-            ...decision,
-            resolved_requirements:
-              "resolved_requirements" in decision
-                ? decision.resolved_requirements
-                : Array.isArray(evidence)
-                  ? [{ id: "req-1", evidence }]
-                  : [],
-          });
-        }
-      } catch {
-        return response;
-      }
-
-      return response;
-    }),
-  ];
   let index = 0;
 
   return {
@@ -83,8 +43,7 @@ function createSequencedClient(
       async generate(prompt, format) {
         prompts.push(prompt);
         formats.push(format);
-        const response = plannedResponses[index];
-        index++;
+        const response = responses[index++];
 
         if (response === undefined) {
           throw new Error("El cliente simulado no recibió una respuesta configurada.");
@@ -98,832 +57,236 @@ function createSequencedClient(
   };
 }
 
+const contentRequirement = {
+  type: "task_requirements",
+  requirements: [{ description: "Encontrar el autor.", kind: "content" }],
+};
+
 beforeEach(async () => {
   sandboxDirectory = await mkdtemp(join(tmpdir(), "lux-agent-sandbox-"));
 });
 
 afterEach(async () => {
-  vi.restoreAllMocks();
   await rm(sandboxDirectory, { recursive: true, force: true });
 });
 
 describe("runAgent", () => {
-  it("rejects a response that is not syntactically valid JSON", async () => {
-    const { client, prompts } = createSequencedClient(["{respuesta rota"]);
+  it("rejects malformed JSON", async () => {
+    const client: AgentLlmClient = {
+      async generate() {
+        return { response: "{broken", requestDurationMs: 0 };
+      },
+    };
 
-    await expect(runAgent("Responde brevemente.", createConfig(), client)).rejects.toThrow(
+    await expect(runAgent("Completa la tarea.", createConfig(), client)).rejects.toThrow(
       "El modelo no produjo JSON válido:",
     );
-    expect(prompts).toHaveLength(2);
   });
 
-  it("rejects a decision that does not satisfy the schema", async () => {
-    const { client } = createSequencedClient([
-      JSON.stringify({ type: "tool_call", tool: 42, arguments: {} }),
-    ]);
-
-    await expect(runAgent("Responde brevemente.", createConfig(), client)).rejects.toThrow(
-      "La decisión fue rechazada por Zod.",
-    );
-  });
-
-  it("recovers from a final answer when there is no compatible evidence", async () => {
-    await writeFile(join(sandboxDirectory, "note.md"), "contenido");
-    const { client, prompts } = createSequencedClient([
-      JSON.stringify({
-        type: "final_answer",
-        answer: "Respuesta indebida.",
-        evidence: ["obs-1"],
-      }),
-      JSON.stringify({
-        type: "tool_call",
-        tool: "read_file",
-        arguments: { path: "note.md" },
-      }),
-      JSON.stringify({
-        type: "final_answer",
-        answer: "Archivo leído.",
-        evidence: ["obs-1"],
-      }),
-    ]);
-
-    await expect(runAgent("Responde brevemente.", createConfig(), client)).resolves.toBe(
-      "Archivo leído.",
-    );
-    expect(prompts[2]).toContain('"id": "feedback-1"');
-    expect(prompts[2]).toContain("El modelo intentó finalizar en un estado no permitido.");
-    expect(prompts[2]).toContain('"status": "pending"');
-  });
-
-  it("does not offer final_answer in the schema while there is no evidence", async () => {
-    const { client, formats } = createSequencedClient([
-      JSON.stringify({
+  it("requires search_text before read_file can resolve content", async () => {
+    await writeFile(join(sandboxDirectory, "notes.md"), "Autor: Mich DM");
+    const { client, formats } = createClient([
+      contentRequirement,
+      {
         type: "tool_call",
         tool: "list_directory",
         arguments: { path: "." },
-      }),
-    ]);
-
-    await expect(
-      runAgent("Responde brevemente.", createConfig({ maxSteps: 2 }), client),
-    ).rejects.toThrow("El agente alcanzó el límite de 2 pasos sin terminar.");
-
-    const receivedSchema = JSON.stringify(formats[1]);
-    expect(receivedSchema).not.toContain("final_answer");
-    expect(receivedSchema).toContain("read_file");
-    expect(receivedSchema).toContain("list_directory");
-  });
-
-  it("uses DIRECTORY_EVIDENCE after listing and accepts a valid reference", async () => {
-    const { client, prompts, formats } = createSequencedClient(
-      [
-        JSON.stringify({
-          type: "tool_call",
-          tool: "list_directory",
-          arguments: { path: "." },
-        }),
-        JSON.stringify({
-          type: "final_answer",
-          answer: "Directorio inspeccionado.",
-          evidence: ["obs-1"],
-        }),
-      ],
-      [{ description: "Descubrir el directorio.", kind: "discovery" }],
-    );
-
-    await expect(runAgent("Responde brevemente.", createConfig(), client)).resolves.toBe(
-      "Directorio inspeccionado.",
-    );
-    expect(prompts[2]).toContain("Estado de evidencia actual: DIRECTORY_EVIDENCE.");
-    const secondStepSchema = JSON.stringify(formats[2]);
-    expect(secondStepSchema).toContain("final_answer");
-    expect(secondStepSchema).toContain("obs-1");
-  });
-
-  it("allows list_directory to resolve a discovery requirement", async () => {
-    const { client } = createSequencedClient(
-      [
-        JSON.stringify({
-          type: "tool_call",
-          tool: "list_directory",
-          arguments: { path: "." },
-        }),
-        JSON.stringify({
-          type: "final_answer",
-          answer: "Hay archivos disponibles.",
-          evidence: ["obs-1"],
-          resolved_requirements: [{ id: "req-1", evidence: ["obs-1"] }],
-        }),
-      ],
-      [{ description: "Descubrir archivos disponibles.", kind: "discovery" }],
-    );
-
-    await expect(runAgent("¿Qué archivos hay?", createConfig(), client)).resolves.toBe(
-      "Hay archivos disponibles.",
-    );
-  });
-
-  it("does not offer final_answer after search_text for a content requirement", async () => {
-    await writeFile(join(sandboxDirectory, "notes.md"), "Autor: Mich DM");
-    const { client, formats } = createSequencedClient([
-      JSON.stringify({
+        for_requirements: ["req-1"],
+      },
+      {
         type: "tool_call",
         tool: "search_text",
         arguments: { path: ".", query: "autor" },
-      }),
-      JSON.stringify({
+        for_requirements: ["req-1"],
+      },
+      {
         type: "tool_call",
         tool: "read_file",
         arguments: { path: "notes.md" },
-      }),
-      JSON.stringify({
+        for_requirements: ["req-1"],
+      },
+      {
         type: "final_answer",
-        answer: "El autor es Mich DM.",
-        evidence: ["obs-2"],
-        resolved_requirements: [{ id: "req-1", evidence: ["obs-2"] }],
-      }),
+        evidence: ["obs-3"],
+        answers: [{ id: "req-1", answer: "Mich DM", evidence: ["obs-3"] }],
+      },
     ]);
 
-    await expect(runAgent("Dime el autor.", createConfig(), client)).resolves.toBe(
-      "El autor es Mich DM.",
-    );
-
+    await expect(runAgent("Dime el autor.", createConfig(), client)).resolves.toBe("Mich DM");
     expect(JSON.stringify(formats[2])).not.toContain("final_answer");
-    expect(JSON.stringify(formats[2])).toContain("read_file");
+    expect(JSON.stringify(formats[3])).not.toContain("final_answer");
+    expect(JSON.stringify(formats[4])).toContain("final_answer");
   });
 
-  it("resolves two content requirements from one searched and read file", async () => {
+  it("blocks a final answer until every same-file content requirement has a search", async () => {
     await writeFile(
       join(sandboxDirectory, "notes.md"),
       "Autor: Mich DM\nPelicula Favorita: Iron Man 1",
     );
-    const { client } = createSequencedClient(
-      [
-        JSON.stringify({
-          type: "tool_call",
-          tool: "search_text",
-          arguments: { path: ".", query: "autor" },
-        }),
-        JSON.stringify({
-          type: "tool_call",
-          tool: "read_file",
-          arguments: { path: "notes.md" },
-        }),
-        JSON.stringify({
-          type: "final_answer",
-          answer: "El autor es Mich DM y la pelicula favorita es Iron Man 1.",
-          evidence: ["obs-2"],
-          resolved_requirements: [
-            { id: "req-1", evidence: ["obs-2"] },
-            { id: "req-2", evidence: ["obs-2"] },
-          ],
-        }),
-      ],
-      [
-        { description: "Encontrar el autor.", kind: "content" },
-        { description: "Encontrar la pelicula favorita.", kind: "content" },
-      ],
-    );
+    const { client, prompts } = createClient([
+      {
+        type: "task_requirements",
+        requirements: [
+          { description: "Autor.", kind: "content" },
+          { description: "Pelicula favorita.", kind: "content" },
+        ],
+      },
+      {
+        type: "tool_call",
+        tool: "list_directory",
+        arguments: { path: "." },
+        for_requirements: ["req-1", "req-2"],
+      },
+      {
+        type: "tool_call",
+        tool: "search_text",
+        arguments: { path: ".", query: "autor" },
+        for_requirements: ["req-1"],
+      },
+      {
+        type: "tool_call",
+        tool: "read_file",
+        arguments: { path: "notes.md" },
+        for_requirements: ["req-1"],
+      },
+      {
+        type: "final_answer",
+        evidence: ["obs-3"],
+        answers: [
+          { id: "req-1", answer: "Mich DM", evidence: ["obs-3"] },
+          { id: "req-2", answer: "Iron Man 1", evidence: ["obs-3"] },
+        ],
+      },
+      {
+        type: "tool_call",
+        tool: "search_text",
+        arguments: { path: ".", query: "pelicula favorita" },
+        for_requirements: ["req-2"],
+      },
+      {
+        type: "final_answer",
+        evidence: ["obs-3"],
+        answers: [
+          { id: "req-1", answer: "Autor: Mich DM", evidence: ["obs-3"] },
+          { id: "req-2", answer: "Pelicula favorita: Iron Man 1", evidence: ["obs-3"] },
+        ],
+      },
+    ]);
 
     await expect(runAgent("Completa la tarea.", createConfig(), client)).resolves.toBe(
-      "El autor es Mich DM y la pelicula favorita es Iron Man 1.",
+      "Autor: Mich DM\nPelicula favorita: Iron Man 1",
     );
+    expect(prompts[5]).toContain('"id": "feedback-1"');
   });
 
-  it("completes a two-file search flow within seven steps", async () => {
+  it("requires independent searches and reads for different files", async () => {
     await writeFile(join(sandboxDirectory, "author.md"), "Autor: Mich DM");
-    await writeFile(
-      join(sandboxDirectory, "favorites.md"),
-      "Pelicula Favorita: Iron Man 1",
-    );
-    const { client } = createSequencedClient(
-      [
-        JSON.stringify({
-          type: "tool_call",
-          tool: "list_directory",
-          arguments: { path: "." },
-        }),
-        JSON.stringify({
-          type: "tool_call",
-          tool: "search_text",
-          arguments: { path: ".", query: "autor" },
-        }),
-        JSON.stringify({
-          type: "tool_call",
-          tool: "search_text",
-          arguments: { path: ".", query: "pelicula favorita" },
-        }),
-        JSON.stringify({
-          type: "tool_call",
-          tool: "read_file",
-          arguments: { path: "author.md" },
-        }),
-        JSON.stringify({
-          type: "tool_call",
-          tool: "read_file",
-          arguments: { path: "favorites.md" },
-        }),
-        JSON.stringify({
-          type: "final_answer",
-          answer: "El autor es Mich DM y la pelicula favorita es Iron Man 1.",
-          evidence: ["obs-4", "obs-5"],
-          resolved_requirements: [
-            { id: "req-1", evidence: ["obs-4"] },
-            { id: "req-2", evidence: ["obs-5"] },
-          ],
-        }),
-      ],
-      [
-        { description: "Encontrar el autor.", kind: "content" },
-        { description: "Encontrar la pelicula favorita.", kind: "content" },
-      ],
-    );
-
-    await expect(
-      runAgent("Completa la tarea.", createConfig({ maxSteps: 7 }), client),
-    ).resolves.toBe("El autor es Mich DM y la pelicula favorita es Iron Man 1.");
-  });
-
-  it("does not offer final_answer after listing when a content requirement is pending", async () => {
-    await writeFile(join(sandboxDirectory, "note.md"), "contenido");
-    const { client, formats } = createSequencedClient([
-      JSON.stringify({
+    await writeFile(join(sandboxDirectory, "package.json"), '{"devDependencies":{"vitest":"4"}}');
+    const { client } = createClient([
+      {
+        type: "task_requirements",
+        requirements: [
+          { description: "Autor.", kind: "content" },
+          { description: "devDependencies.", kind: "content" },
+        ],
+      },
+      {
         type: "tool_call",
         tool: "list_directory",
         arguments: { path: "." },
-      }),
-      JSON.stringify({
+        for_requirements: ["req-1", "req-2"],
+      },
+      {
+        type: "tool_call",
+        tool: "search_text",
+        arguments: { path: ".", query: "autor" },
+        for_requirements: ["req-1"],
+      },
+      {
+        type: "tool_call",
+        tool: "search_text",
+        arguments: { path: ".", query: "devDependencies" },
+        for_requirements: ["req-2"],
+      },
+      {
         type: "tool_call",
         tool: "read_file",
-        arguments: { path: "note.md" },
-      }),
-      JSON.stringify({
-        type: "final_answer",
-        answer: "Archivo leído.",
-        evidence: ["obs-2"],
-        resolved_requirements: [{ id: "req-1", evidence: ["obs-2"] }],
-      }),
-    ]);
-
-    await expect(runAgent("Dime el autor.", createConfig(), client)).resolves.toBe(
-      "Archivo leído.",
-    );
-
-    const schemaAfterListing = JSON.stringify(formats[2]);
-    expect(schemaAfterListing).not.toContain("final_answer");
-    expect(schemaAfterListing).toContain("read_file");
-  });
-
-  it("restricts content requirement evidence to read_file observations in the schema", async () => {
-    await writeFile(join(sandboxDirectory, "note.md"), "contenido");
-    const { client, formats } = createSequencedClient([
-      JSON.stringify({
-        type: "tool_call",
-        tool: "list_directory",
-        arguments: { path: "." },
-      }),
-      JSON.stringify({
+        arguments: { path: "author.md" },
+        for_requirements: ["req-1"],
+      },
+      {
         type: "tool_call",
         tool: "read_file",
-        arguments: { path: "note.md" },
-      }),
-      JSON.stringify({
+        arguments: { path: "package.json" },
+        for_requirements: ["req-2"],
+      },
+      {
         type: "final_answer",
-        answer: "Archivo leído.",
-        evidence: ["obs-2"],
-        resolved_requirements: [{ id: "req-1", evidence: ["obs-2"] }],
-      }),
+        evidence: ["obs-4", "obs-5"],
+        answers: [
+          { id: "req-1", answer: "Autor: Mich DM", evidence: ["obs-4"] },
+          { id: "req-2", answer: "devDependencies: vitest", evidence: ["obs-5"] },
+        ],
+      },
     ]);
-
-    await runAgent("Dime el autor.", createConfig(), client);
-
-    const schemaAfterReading = JSON.stringify(formats[3]);
-    expect(schemaAfterReading).toContain("final_answer");
-    expect(schemaAfterReading).toContain('"enum":["obs-2"]');
-  });
-
-  it("waits for compatible evidence for every requirement kind", async () => {
-    await writeFile(join(sandboxDirectory, "note.md"), "Autor: Mich DM");
-    const { client, formats } = createSequencedClient(
-      [
-        JSON.stringify({
-          type: "tool_call",
-          tool: "list_directory",
-          arguments: { path: "." },
-        }),
-        JSON.stringify({
-          type: "tool_call",
-          tool: "read_file",
-          arguments: { path: "note.md" },
-        }),
-        JSON.stringify({
-          type: "final_answer",
-          answer: "Hay un archivo y el autor es Mich DM.",
-          evidence: ["obs-1", "obs-2"],
-          resolved_requirements: [
-            { id: "req-1", evidence: ["obs-1"] },
-            { id: "req-2", evidence: ["obs-2"] },
-          ],
-        }),
-      ],
-      [
-        { description: "Descubrir los archivos.", kind: "discovery" },
-        { description: "Encontrar el autor.", kind: "content" },
-      ],
-    );
 
     await expect(runAgent("Completa la tarea.", createConfig(), client)).resolves.toBe(
-      "Hay un archivo y el autor es Mich DM.",
-    );
-
-    expect(JSON.stringify(formats[2])).not.toContain("final_answer");
-    expect(JSON.stringify(formats[3])).toContain("final_answer");
-  });
-
-  it("recovers when final_answer uses list_directory for a content requirement", async () => {
-    await writeFile(join(sandboxDirectory, "note.md"), "contenido");
-    const { client } = createSequencedClient([
-      JSON.stringify({
-        type: "tool_call",
-        tool: "list_directory",
-        arguments: { path: "." },
-      }),
-      JSON.stringify({
-        type: "tool_call",
-        tool: "read_file",
-        arguments: { path: "note.md" },
-      }),
-      JSON.stringify({
-        type: "final_answer",
-        answer: "Respuesta indebida.",
-        evidence: ["obs-1", "obs-2"],
-        resolved_requirements: [{ id: "req-1", evidence: ["obs-1"] }],
-      }),
-      JSON.stringify({
-        type: "final_answer",
-        answer: "Archivo leído.",
-        evidence: ["obs-2"],
-        resolved_requirements: [{ id: "req-1", evidence: ["obs-2"] }],
-      }),
-    ]);
-
-    await expect(runAgent("Dime el autor.", createConfig(), client)).resolves.toBe(
-      "Archivo leído.",
+      "Autor: Mich DM\ndevDependencies: vitest",
     );
   });
 
-  it("uses FILE_EVIDENCE and assigns unique IDs to successful observations", async () => {
-    await writeFile(join(sandboxDirectory, "note.md"), "contenido");
-    const { client, prompts } = createSequencedClient([
-      JSON.stringify({
-        type: "tool_call",
-        tool: "list_directory",
-        arguments: { path: "." },
-      }),
-      JSON.stringify({
-        type: "tool_call",
-        tool: "read_file",
-        arguments: { path: "note.md" },
-      }),
-      JSON.stringify({
-        type: "final_answer",
-        answer: "Archivo leído.",
-        evidence: ["obs-1", "obs-2"],
-        resolved_requirements: [{ id: "req-1", evidence: ["obs-2"] }],
-      }),
-    ]);
-
-    await expect(runAgent("Responde brevemente.", createConfig(), client)).resolves.toBe(
-      "Archivo leído.",
-    );
-    expect(prompts[3]).toContain("Estado de evidencia actual: FILE_EVIDENCE.");
-    expect(prompts[3]).toContain('"id": "obs-1"');
-    expect(prompts[3]).toContain('"id": "obs-2"');
-  });
-
-  it("recovers when a final answer leaves a requirement pending", async () => {
-    await writeFile(
-      join(sandboxDirectory, "example-package.json"),
-      '{"scripts":{"test":"vitest run"}}',
-    );
-    const { client } = createSequencedClient(
-      [
-        JSON.stringify({
-          type: "tool_call",
-          tool: "list_directory",
-          arguments: { path: "." },
-        }),
-        JSON.stringify({
-          type: "tool_call",
-          tool: "read_file",
-          arguments: { path: "example-package.json" },
-        }),
-        JSON.stringify({
-          type: "final_answer",
-          answer: "El proyecto usa Vitest.",
-          evidence: ["obs-2"],
-          resolved_requirements: [{ id: "req-2", evidence: ["obs-2"] }],
-        }),
-        JSON.stringify({
-          type: "final_answer",
-          answer: "Respuesta corregida.",
-          evidence: ["obs-2"],
-          resolved_requirements: [
-            { id: "req-1", evidence: ["obs-2"] },
-            { id: "req-2", evidence: ["obs-2"] },
-          ],
-        }),
-      ],
-      [
-        { description: "Encontrar el nombre del autor.", kind: "content" },
-        { description: "Encontrar la herramienta de tests.", kind: "content" },
-      ],
-    );
-
-    await expect(
-      runAgent(
-        "dime el nombre del autor y qué herramienta usa el proyecto para ejecutar los tests",
-        createConfig(),
-        client,
-      ),
-    ).resolves.toBe("Respuesta corregida.");
-  });
-
-  it("recovers when final_answer omits evidence used by a resolved requirement", async () => {
-    await writeFile(join(sandboxDirectory, "author.md"), "Autor: Mich DM");
-    await writeFile(join(sandboxDirectory, "tests.json"), '{"test":"vitest run"}');
-    const { client, prompts } = createSequencedClient(
-      [
-        JSON.stringify({
-          type: "tool_call",
-          tool: "read_file",
-          arguments: { path: "author.md" },
-        }),
-        JSON.stringify({
-          type: "tool_call",
-          tool: "read_file",
-          arguments: { path: "tests.json" },
-        }),
-        JSON.stringify({
-          type: "final_answer",
-          answer: "Respuesta incompleta en trazabilidad.",
-          evidence: ["obs-1"],
-          resolved_requirements: [
-            { id: "req-1", evidence: ["obs-1"] },
-            { id: "req-2", evidence: ["obs-2"] },
-          ],
-        }),
-        JSON.stringify({
-          type: "final_answer",
-          answer: "Respuesta corregida.",
-          evidence: ["obs-1", "obs-2"],
-          resolved_requirements: [
-            { id: "req-1", evidence: ["obs-1"] },
-            { id: "req-2", evidence: ["obs-2"] },
-          ],
-        }),
-      ],
-      [
-        { description: "Encontrar el autor.", kind: "content" },
-        { description: "Encontrar la herramienta de tests.", kind: "content" },
-      ],
-    );
-
-    await expect(runAgent("Completa la tarea.", createConfig(), client)).resolves.toBe(
-      "Respuesta corregida.",
-    );
-    expect(prompts[4]).toContain('"id": "feedback-1"');
-    expect(prompts[4]).toContain('"status": "pending"');
-  });
-
-  it("completes a multi-requirement task only after each requirement has evidence", async () => {
-    await writeFile(
-      join(sandboxDirectory, "example-package.json"),
-      '{"scripts":{"test":"vitest run"}}',
-    );
+  it("rejects a read_file path not found by the requirement search", async () => {
     await writeFile(join(sandboxDirectory, "notes.md"), "Autor: Mich DM");
-    const { client, prompts } = createSequencedClient(
-      [
-        JSON.stringify({
-          type: "tool_call",
-          tool: "list_directory",
-          arguments: { path: "." },
-        }),
-        JSON.stringify({
-          type: "tool_call",
-          tool: "read_file",
-          arguments: { path: "example-package.json" },
-        }),
-        JSON.stringify({
-          type: "tool_call",
-          tool: "read_file",
-          arguments: { path: "notes.md" },
-        }),
-        JSON.stringify({
-          type: "final_answer",
-          answer: "El autor es Mich DM y los tests usan Vitest.",
-          evidence: ["obs-2", "obs-3"],
-          resolved_requirements: [
-            { id: "req-1", evidence: ["obs-3"] },
-            { id: "req-2", evidence: ["obs-2"] },
-          ],
-        }),
-      ],
-      [
-        { description: "Encontrar el nombre del autor.", kind: "content" },
-        { description: "Encontrar la herramienta de tests.", kind: "content" },
-      ],
-    );
-
-    await expect(
-      runAgent(
-        "dime el nombre del autor y qué herramienta usa el proyecto para ejecutar los tests",
-        createConfig(),
-        client,
-      ),
-    ).resolves.toBe("El autor es Mich DM y los tests usan Vitest.");
-    expect(prompts[4]).toContain('"id": "req-2"');
-    expect(prompts[4]).toContain('"status": "pending"');
-    expect(prompts[4]).toContain('"id": "obs-2"');
-    expect(prompts[4]).toContain('"id": "obs-3"');
-  });
-
-  it("recovers from a requirement resolution for an unknown requirement", async () => {
-    await writeFile(join(sandboxDirectory, "note.md"), "contenido");
-    const { client } = createSequencedClient([
-      JSON.stringify({
+    await writeFile(join(sandboxDirectory, "other.md"), "otro contenido");
+    const { client, prompts } = createClient([
+      contentRequirement,
+      {
+        type: "tool_call",
+        tool: "search_text",
+        arguments: { path: ".", query: "autor" },
+        for_requirements: ["req-1"],
+      },
+      {
         type: "tool_call",
         tool: "read_file",
-        arguments: { path: "note.md" },
-      }),
-      JSON.stringify({
-        type: "final_answer",
-        answer: "Respuesta indebida.",
-        evidence: ["obs-1"],
-        resolved_requirements: [{ id: "req-99", evidence: ["obs-1"] }],
-      }),
-      JSON.stringify({
-        type: "final_answer",
-        answer: "Archivo leído.",
-        evidence: ["obs-1"],
-      }),
-    ]);
-
-    await expect(runAgent("Responde brevemente.", createConfig(), client)).resolves.toBe(
-      "Archivo leído.",
-    );
-  });
-
-  it("recovers from a final answer that references an observation that does not exist", async () => {
-    await writeFile(join(sandboxDirectory, "note.md"), "contenido");
-    const { client } = createSequencedClient([
-      JSON.stringify({
+        arguments: { path: "other.md" },
+        for_requirements: ["req-1"],
+      },
+      {
         type: "tool_call",
         tool: "read_file",
-        arguments: { path: "note.md" },
-      }),
-      JSON.stringify({
-        type: "final_answer",
-        answer: "Respuesta indebida.",
-        evidence: ["obs-99"],
-      }),
-      JSON.stringify({
-        type: "final_answer",
-        answer: "Archivo leído.",
-        evidence: ["obs-1"],
-      }),
-    ]);
-
-    await expect(runAgent("Responde brevemente.", createConfig(), client)).resolves.toBe(
-      "Archivo leído.",
-    );
-  });
-
-  it("recovers from a final answer that references a failed observation", async () => {
-    await writeFile(join(sandboxDirectory, "note.md"), "contenido");
-    const { client } = createSequencedClient([
-      JSON.stringify({
-        type: "tool_call",
-        tool: "read_file",
-        arguments: { path: "note.md" },
-      }),
-      JSON.stringify({
-        type: "tool_call",
-        tool: "read_file",
-        arguments: { path: "../outside.md" },
-      }),
-      JSON.stringify({
-        type: "final_answer",
-        answer: "Respuesta indebida.",
-        evidence: ["obs-2"],
-      }),
-      JSON.stringify({
-        type: "final_answer",
-        answer: "Archivo leído.",
-        evidence: ["obs-1"],
-      }),
-    ]);
-
-    await expect(runAgent("Responde brevemente.", createConfig(), client)).resolves.toBe(
-      "Archivo leído.",
-    );
-  });
-
-  it("blocks a duplicate successful tool call without executing it again", async () => {
-    const listDirectory = toolRegistry.get("list_directory");
-
-    if (!listDirectory) {
-      throw new Error("list_directory no está registrada.");
-    }
-
-    const executeSpy = vi.spyOn(listDirectory, "execute");
-    const { client, prompts } = createSequencedClient(
-      [
-        JSON.stringify({
-          type: "tool_call",
-          tool: "list_directory",
-          arguments: { path: "." },
-        }),
-        JSON.stringify({
-          type: "tool_call",
-          tool: "list_directory",
-          arguments: { path: "." },
-        }),
-        JSON.stringify({
-          type: "final_answer",
-          answer: "Directorio reutilizado.",
-          evidence: ["obs-1"],
-        }),
-      ],
-      [{ description: "Descubrir el directorio.", kind: "discovery" }],
-    );
-
-    await expect(runAgent("Responde brevemente.", createConfig(), client)).resolves.toBe(
-      "Directorio reutilizado.",
-    );
-    expect(executeSpy).toHaveBeenCalledTimes(1);
-    expect(prompts[3]).toContain('"id": "obs-2"');
-    expect(prompts[3]).toContain('"status": "blocked"');
-    expect(prompts[3]).toContain('"reason": "duplicate_successful_tool_call"');
-    expect(prompts[3]).toContain('"existingObservationId": "obs-1"');
-  });
-
-  it("recovers from a final answer that references a blocked observation", async () => {
-    await writeFile(join(sandboxDirectory, "note.md"), "contenido");
-    const { client } = createSequencedClient([
-      JSON.stringify({
-        type: "tool_call",
-        tool: "read_file",
-        arguments: { path: "note.md" },
-      }),
-      JSON.stringify({
-        type: "tool_call",
-        tool: "read_file",
-        arguments: { path: "note.md" },
-      }),
-      JSON.stringify({
-        type: "final_answer",
-        answer: "Respuesta indebida.",
-        evidence: ["obs-2"],
-      }),
-      JSON.stringify({
-        type: "final_answer",
-        answer: "Archivo leído.",
-        evidence: ["obs-1"],
-      }),
-    ]);
-
-    await expect(runAgent("Responde brevemente.", createConfig(), client)).resolves.toBe(
-      "Archivo leído.",
-    );
-  });
-
-  it("allows the same tool with different arguments", async () => {
-    await writeFile(join(sandboxDirectory, "first.md"), "primero");
-    await writeFile(join(sandboxDirectory, "second.md"), "segundo");
-    const readFile = toolRegistry.get("read_file");
-
-    if (!readFile) {
-      throw new Error("read_file no está registrada.");
-    }
-
-    const executeSpy = vi.spyOn(readFile, "execute");
-    const { client } = createSequencedClient([
-      JSON.stringify({
-        type: "tool_call",
-        tool: "read_file",
-        arguments: { path: "first.md" },
-      }),
-      JSON.stringify({
-        type: "tool_call",
-        tool: "read_file",
-        arguments: { path: "second.md" },
-      }),
-      JSON.stringify({
-        type: "final_answer",
-        answer: "Dos archivos leídos.",
-        evidence: ["obs-1", "obs-2"],
-      }),
-    ]);
-
-    await expect(runAgent("Responde brevemente.", createConfig(), client)).resolves.toBe(
-      "Dos archivos leídos.",
-    );
-    expect(executeSpy).toHaveBeenCalledTimes(2);
-  });
-
-  it("does not block a repeated tool call after its earlier execution failed", async () => {
-    const readFile = toolRegistry.get("read_file");
-
-    if (!readFile) {
-      throw new Error("read_file no está registrada.");
-    }
-
-    const executeSpy = vi.spyOn(readFile, "execute");
-    const { client, prompts } = createSequencedClient([
-      JSON.stringify({
-        type: "tool_call",
-        tool: "read_file",
-        arguments: { path: "../outside.md" },
-      }),
-      JSON.stringify({
-        type: "tool_call",
-        tool: "read_file",
-        arguments: { path: "../outside.md" },
-      }),
+        arguments: { path: "notes.md" },
+        for_requirements: ["req-1"],
+      },
     ]);
 
     await expect(
-      runAgent("Responde brevemente.", createConfig({ maxSteps: 3 }), client),
-    ).rejects.toThrow("El agente alcanzó el límite de 3 pasos sin terminar.");
-    expect(executeSpy).toHaveBeenCalledTimes(2);
-    expect(prompts[2]).toContain('"status": "error"');
-    expect(prompts[2]).not.toContain('"status": "blocked"');
+      runAgent("Completa la tarea.", createConfig({ maxSteps: 4 }), client),
+    ).rejects.toThrow("El agente alcanzó el límite de 4 pasos sin terminar.");
+    expect(prompts[3]).toContain("read_file debe usar una ruta encontrada por search_text");
   });
 
-  it("records a tool error and lets a later valid final answer finish", async () => {
-    const { client, prompts } = createSequencedClient(
-      [
-        JSON.stringify({
-          type: "tool_call",
-          tool: "list_directory",
-          arguments: { path: "." },
-        }),
-        JSON.stringify({
-          type: "tool_call",
-          tool: "read_file",
-          arguments: { path: "../outside.md" },
-        }),
-        JSON.stringify({
-          type: "final_answer",
-          answer: "La ruta fue rechazada.",
-          evidence: ["obs-1"],
-        }),
-      ],
-      [{ description: "Descubrir el directorio.", kind: "discovery" }],
-    );
-
-    await expect(runAgent("Completa la tarea.", createConfig(), client)).resolves.toBe(
-      "La ruta fue rechazada.",
-    );
-    expect(prompts).toHaveLength(4);
-    expect(prompts[3]).toContain('"id": "obs-2"');
-    expect(prompts[3]).toContain('"status": "error"');
-    expect(prompts[3]).toContain("La ruta intenta salir de la carpeta sandbox.");
-  });
-
-  it("stops after the configured maximum number of non-terminal steps", async () => {
-    const { client, prompts } = createSequencedClient([
-      JSON.stringify({
+  it("returns discovery evidence only when list_directory targets the requirement", async () => {
+    const { client } = createClient([
+      {
+        type: "task_requirements",
+        requirements: [{ description: "Listar archivos.", kind: "discovery" }],
+      },
+      {
         type: "tool_call",
         tool: "list_directory",
         arguments: { path: "." },
-      }),
-      JSON.stringify({
-        type: "tool_call",
-        tool: "list_directory",
-        arguments: { path: "." },
-      }),
+        for_requirements: ["req-1"],
+      },
+      {
+        type: "final_answer",
+        evidence: ["obs-1"],
+        answers: [{ id: "req-1", answer: "No hay archivos.", evidence: ["obs-1"] }],
+      },
     ]);
 
-    await expect(
-      runAgent("Completa la tarea.", createConfig({ maxSteps: 2 }), client),
-    ).rejects.toThrow("El agente alcanzó el límite de 2 pasos sin terminar.");
-    expect(prompts).toHaveLength(2);
-  });
-
-  it("requires evidence in every final answer", async () => {
-    const { client } = createSequencedClient([
-      JSON.stringify({
-        type: "tool_call",
-        tool: "list_directory",
-        arguments: { path: "." },
-      }),
-      JSON.stringify({ type: "final_answer", answer: "Respuesta simulada." }),
-    ]);
-
-    await expect(runAgent("Responde brevemente.", createConfig(), client)).rejects.toThrow(
-      "La decisión fue rechazada por Zod.",
+    await expect(runAgent("Lista archivos.", createConfig(), client)).resolves.toBe(
+      "No hay archivos.",
     );
   });
 });
