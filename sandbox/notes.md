@@ -8,3 +8,5 @@ La funcion de este proyecto es analisis de texto.
 Lugar de trabajo Sistemas Premium
 
 mi bebida favorita es el coldbrew
+
+gestor de versiones github
