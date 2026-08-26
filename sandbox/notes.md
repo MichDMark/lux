@@ -10,3 +10,4 @@ Lugar de trabajo Sistemas Premium
 mi bebida favorita es el coldbrew
 
 gestor de versiones github
+forma de acceso de los usuarios: ssh
