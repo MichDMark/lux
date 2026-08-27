@@ -11,3 +11,5 @@ mi bebida favorita es el coldbrew
 
 marca de mouse: logitech
 
+gestor de versiones github
+forma de acceso de los usuarios: ssh
